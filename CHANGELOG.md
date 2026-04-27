@@ -2,6 +2,17 @@
 
 All notable changes to `clawtodos` will be documented in this file. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
 
+## [2.1.0] — 2026-04-27
+
+### Added
+
+- **`BOOTSTRAP.md`** — agent-native install procedure. Paste one line into any AI agent (OpenClaw, Claude Code, Codex, Cursor) and it walks the user through full setup: detect environment, pip install, init `~/.todos/`, discover other AI agents on the machine, wire each one with the snippet (auto-replacing legacy v1 blocks), install the OpenClaw review skill, register active projects, run doctor, queue first review. About 2 minutes, fully conversational.
+- **README** now leads with the agent-native install. pip / install.py / dev install moved to a "Manual install" subsection for users who don't yet have an agent set up.
+
+### Changed
+
+- Manual install paths (pip / install.py) are unchanged and still supported. The agent-native flow is layered on top, not a replacement.
+
 ## [2.0.0] — 2026-04-27
 
 Initial release of `clawtodos`.

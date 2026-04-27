@@ -64,16 +64,45 @@ When you're ready to review, you run `todos list --state inbox` (or, if you're a
 
 ## Install
 
-### Option 1 — pip (cross-platform, recommended)
+clawtodos is **agent-native** — the whole product is "your AI does work for you." Installation works the same way. Paste one line into any AI agent you already use and it walks you through everything: install the CLI, bootstrap the central system, wire up your other agents, register your projects, queue your first review.
+
+### One-liner — paste this into any AI agent
+
+```text
+Install clawtodos for me. Follow the bootstrap procedure at:
+https://raw.githubusercontent.com/zzbyy/clawtodos/main/BOOTSTRAP.md
+```
+
+Works in **OpenClaw**, **Claude Code**, **Codex CLI**, **Cursor**, or any agent that can fetch URLs and run shell commands. The agent will:
+
+1. Detect your Python / pip / git environment.
+2. Run `pip install --user git+https://github.com/zzbyy/clawtodos.git`.
+3. Run `todos init` — creates `~/.todos/`, makes it a git repo.
+4. Discover which other AI agents you have (Claude Code, Codex, Cursor, OpenClaw) and ask which to wire up.
+5. Append the [agent snippet](snippets/AGENTS_SNIPPET.md) to each chosen instruction file (replacing any old v1 block automatically).
+6. Install the [`clawtodos-review`](openclaw/clawtodos-review) skill if you have OpenClaw.
+7. Ask which directories on your machine are active projects, register each with `todos add`.
+8. Run `todos doctor` and offer to walk you through your first inbox.
+
+About 2 minutes start to finish. Each step asks before doing anything that writes outside `~/.todos/`.
+
+If you don't yet have an AI agent set up, or you prefer scripts, see [Manual install](#manual-install) below.
+
+### Manual install
+
+<details>
+<summary><b>pip</b> — cross-platform, no agent needed</summary>
 
 ```bash
 pip install --user git+https://github.com/zzbyy/clawtodos.git
 todos init
 ```
 
-That's it. `todos` is now on your PATH; `~/.todos/` is bootstrapped and version-controlled.
+Then paste [`snippets/AGENTS_SNIPPET.md`](snippets/AGENTS_SNIPPET.md) into your agent instruction files yourself. See the table in [Wire up agents](#wire-up-agents) for which file goes where.
+</details>
 
-### Option 2 — clone + installer (no pip needed)
+<details>
+<summary><b>clone + python install.py</b> — Python only, no pip</summary>
 
 ```bash
 git clone https://github.com/zzbyy/clawtodos.git
@@ -82,9 +111,11 @@ python3 install.py        # macOS / Linux
 python  install.py        # Windows
 ```
 
-The installer copies a small `todos` wrapper to `~/.local/bin/todos` (Unix) or `%LOCALAPPDATA%\clawtodos\bin\todos.cmd` (Windows), then runs `todos init`. If the bin dir isn't on your `PATH`, the installer tells you exactly what line to add.
+Drops a `todos` wrapper into `~/.local/bin/` (Unix) or `%LOCALAPPDATA%\clawtodos\bin\` (Windows) and runs `todos init`. You still need to copy the snippet into your agent files yourself.
+</details>
 
-### Option 3 — local dev install
+<details>
+<summary><b>local dev install</b> — for hacking on clawtodos itself</summary>
 
 ```bash
 git clone https://github.com/zzbyy/clawtodos.git
@@ -93,6 +124,7 @@ pip install --user -e .
 ```
 
 Edits to `src/clawtodos/cli.py` are picked up immediately.
+</details>
 
 ---
 
