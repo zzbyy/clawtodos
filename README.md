@@ -128,133 +128,147 @@ Edits to `src/clawtodos/cli.py` are picked up immediately.
 
 ---
 
-## Quick start
+## First conversation — per agent
 
-```bash
-# 1. Bootstrap. Creates ~/.todos/, registers it as a git repo, writes registry.yaml.
-todos init
+You only do this once per machine. Open the agent you already use. Paste the install line. Answer 5 questions. You're done.
 
-# 2. Register a project. Auto-detects code repos vs personal programs.
-todos add /path/to/your/repo
-todos add personal/health           # pseudo-project for non-code domains
+| Agent | How you open it | What you paste / say |
+|---|---|---|
+| **OpenClaw** | Open the OpenClaw chat (web or app) | `Install clawtodos. Follow https://raw.githubusercontent.com/zzbyy/clawtodos/main/BOOTSTRAP.md` |
+| **Claude Code** | `claude` in any terminal | Same line as above |
+| **Codex CLI** | `codex` in any terminal | Same line as above (Codex will request file-write permission once) |
+| **Cursor** | Cmd-L (or Ctrl-L) opens the chat panel inside your repo | Same line as above (Cursor wires the snippet into per-repo `.cursorrules` rather than a global file) |
+| **Antigravity / other** | However you normally chat with it | Same line — any agent with shell + URL access can run the bootstrap |
 
-# 3. (One-time) Tell your AI agents about clawtodos. See "Wire up agents" below.
+The agent reads `BOOTSTRAP.md`, runs the 8 phases, and asks you maybe 5 questions along the way (which other agents to wire, which directories are your active projects). End state: `todos` is on PATH, `~/.todos/` exists, every agent you chose to wire knows about clawtodos, and your projects are registered. Total time: ~2 minutes.
 
-# 4. Use your AI normally. When it leaves a follow-up, it lands in INBOX.md.
-
-# 5. Review the inbox once a day.
-todos list --state inbox
-todos approve my-app fix-auth-token-refresh-on-expiry
-todos defer  my-app document-event-stream-api --until 2026-05-15
-todos reject my-app rename-everything --reason "out of scope"
-```
-
-That's the loop.
+> **Tip — if you only have one agent on this machine.** That's fine. Run the bootstrap there. When you install another agent later, run the bootstrap again from inside *that* one — it's idempotent and will just wire the new agent and skip everything already done.
 
 ---
 
-## Wire up agents
+## Daily use — just talk to your agent
 
-Tell each AI agent about clawtodos by pasting [`snippets/AGENTS_SNIPPET.md`](snippets/AGENTS_SNIPPET.md) into its instruction file. Once. The snippet is short — 50 lines of "here's where to write proposals, here's what NOT to do."
+After install you have **zero new commands to memorize.** Talk to your agent the way you already do. The agent translates your sentences into the right `todos` action.
 
-| Agent                      | Where to paste the snippet                              |
-|----------------------------|---------------------------------------------------------|
-| Claude Code                | `~/.claude/CLAUDE.md` (global)                          |
-| Codex CLI                  | `~/.codex/AGENTS.md` (global), or per-repo `AGENTS.md`  |
-| Cursor                     | `<repo>/.cursorrules` (per-repo)                        |
-| OpenClaw                   | `~/.openclaw/workspace/AGENTS.md`                       |
-| Antigravity                | per-repo `AGENTS.md`                                    |
-| Anything else with an instruction file | wherever it reads on startup            |
+### Adding a follow-up — *describe the work, don't write commands*
 
-OpenClaw users — also install the dedicated review skill:
+> **You:** "leave a follow-up about the rate-limiting concern. P2."
+>
+> **Agent:** *Detects you're in `my-app`, appends a properly-formatted entry to `~/.todos/my-app/INBOX.md` with `agent: claude-code` and today's date.*
+>
+> **Agent:** "Added to my-app inbox as 'Add rate-limiting to /auth/refresh' (P2). Your repo working tree is unchanged."
 
-```bash
-# macOS / Linux
-cp -r openclaw/clawtodos-review ~/.openclaw/workspace/skills/
+### Reviewing the inbox — *the daily ritual*
 
-# Windows
-xcopy /E /I "openclaw\clawtodos-review" "%USERPROFILE%\.openclaw\workspace\skills\clawtodos-review"
-```
+In **OpenClaw** (using the dedicated `clawtodos-review` skill the bootstrap installed):
 
-Then say *"review my inbox"* in any OpenClaw chat. The skill walks pending proposals one at a time and applies your verdict via the `todos` CLI. Every approve/reject/defer commits.
+> **You:** "review my inbox"
+>
+> **OpenClaw:** "You have 4 proposals across 3 projects. Walking now.
+>
+> **(1/4) my-app** — proposed by claude-code _(2026-04-27)_
+> ### Fix auth token refresh on expiry
+> Priority: **P1** · Effort: **S**
+> Token refresh fails when expiry is exactly at request time. Repro…
+>
+> **Approve / Edit / Defer / Reject?**"
+>
+> **You:** "approve"
+>
+> **OpenClaw:** "✅ Moved to TODOS. Commit `3406585`. (2/4) …"
+
+In **Claude Code / Codex / Cursor** (no dedicated skill — same flow, slightly less polished):
+
+> **You:** "review my inbox"
+>
+> **Agent:** *Runs `todos list --state inbox`, presents each entry, asks for your verdict, calls the right CLI verb. Identical end result.*
+
+### One-shot verbs — *when you already know what you want*
+
+> **You:** "approve the auth fix in my-app"
+> **Agent:** *Runs `todos approve my-app fix-auth-token-refresh-on-expiry`.*
+
+> **You:** "defer the docs cleanup until next Monday"
+> **Agent:** *Computes date → runs `todos defer my-app document-event-stream-api --until 2026-05-04`.*
+
+> **You:** "reject the rename proposal — it's out of scope"
+> **Agent:** *Runs `todos reject my-app rename-everything --reason "out of scope"`.*
+
+### Closing finished work
+
+> **You:** "I shipped the auth fix and the rate-limiting"
+> **Agent:** *Runs `todos done` for both, summarizes.*
+
+That's the entire daily UX. **You never type a `todos` command unless you want to.**
+
+---
+
+## A day in the life
+
+**8:30 AM — OpenClaw on your phone or laptop**
+
+> **You:** "review my inbox"
+>
+> OpenClaw walks 4 proposals from yesterday. You approve 2, defer 1 to next week, reject 1 ("out of scope, won't ship this quarter"). Inbox empty. ~3 minutes.
+
+**10:00 AM — Claude Code, working in `~/code/my-app`**
+
+> **You:** "fix the auth refresh bug"
+>
+> Claude Code reads `~/.todos/my-app/TODOS.md`, sees the approved task, fixes it. As it wraps up:
+>
+> **Claude Code:** "Done. While I was in there I noticed `/auth/refresh` isn't rate-limited — that's a separate concern. Want me to leave a follow-up?"
+>
+> **You:** "yeah, P2."
+>
+> Claude Code appends a proposal to `~/.todos/my-app/INBOX.md`. The auth fix is committed to your repo cleanly; no todo state leaked into the diff.
+
+**3:00 PM — Codex on a different repo (`side-project`)**
+
+> **You:** "what's left to do here?"
+>
+> Codex runs `todos list --slug side-project --state todos` → shows the 3 queued items for that project only.
+
+**6:00 PM — OpenClaw again**
+
+> **You:** "I shipped the auth fix and the rate-limiting"
+>
+> **OpenClaw:** "Marked 2 done. Today: 3 approved, 2 shipped, 1 deferred, 1 rejected. Inbox: 1 new (claude-code added the rate-limiting follow-up at 10:14 — already approved by you at 10:15). Solid day."
+
+You wrote zero CLI commands. Three different agents collaborated on the same task tree without colliding. Your repos stayed clean.
 
 ---
 
-## How to use it
+## CLI escape hatch — when you want direct control
 
-A real day looks like this.
-
-### Morning — clear the inbox
-
-You sit down with coffee. Your AI agents have been proposing work overnight (or while you were focused on something else).
+You never *have* to use the CLI. But it's there for scripting, automation, or when you want one fast action without a chat round-trip.
 
 ```bash
-$ todos list --state inbox
+todos list --state inbox                              # see what's pending
+todos approve my-app fix-auth-token-refresh-on-expiry # accept a proposal
+todos defer  my-app docs-cleanup --until 2026-05-04   # delay re-review
+todos reject my-app rename-everything --reason "..."  # decline
+todos done   my-app fix-auth-token-refresh-on-expiry  # mark shipped
 
-=== my-app / INBOX ===
-  [fix-auth-token-refresh-on-expiry]   Fix auth token refresh on expiry      P1 S @claude-code
-  [document-event-stream-api]          Document the new event-stream API     P3 S @codex
-  [add-cli-subcommand-export-user-data] Add a CLI subcommand to export user data  P2 L @human
-
-=== personal/health / INBOX ===
-  [book-annual-physical]               Book annual physical                  P2 XS @openclaw
+todos add /path/to/your/repo                          # register a new project
+todos ingest my-app                                   # one-shot import of v1 todos
+todos doctor                                          # sanity check
 ```
 
-You walk them. (Or, in OpenClaw: *"review my inbox"* — same flow, conversational.)
-
-```bash
-$ todos approve my-app fix-auth-token-refresh-on-expiry
-moved my-app/fix-auth-token-refresh-on-expiry: INBOX -> TODOS
-
-$ todos defer my-app document-event-stream-api --until 2026-05-15
-deferred: my-app/document-event-stream-api until 2026-05-15
-
-$ todos approve my-app add-cli-subcommand-export-user-data
-$ todos approve personal/health book-annual-physical
-```
-
-Inbox empty. Your `~/.todos/` git log now has four atomic commits — one per verdict — and `TODOS.md` in each project has the work that's actually queued.
-
-### Mid-day — agent leaves a follow-up
-
-You're pairing with Claude Code on `my-app`. You finish the auth fix. Claude Code recognizes there's a related concern (rate-limiting on the refresh endpoint) and instead of trying to do it now, it appends a proposal to `~/.todos/my-app/INBOX.md`:
-
-```markdown
-### Add rate-limiting to /auth/refresh
-- **status:** open
-- **priority:** P2
-- **effort:** S
-- **agent:** claude-code
-- **created:** 2026-04-27
-
-The fix to refreshIfExpired removes the bug, but the endpoint is still
-unprotected. A botnet could DoS it cheaply. Suggest 5 req/min/IP.
+Common scripting use: a cron job that runs `todos list --state inbox` once a morning and emails you if the inbox has more than 10 entries.
 
 ---
-```
 
-Your repo's working tree is unchanged. The proposal will be there for you tomorrow morning.
-
-### End of day — close out finished work
-
-```bash
-$ todos done my-app fix-auth-token-refresh-on-expiry
-moved my-app/fix-auth-token-refresh-on-expiry: TODOS -> DONE
-```
-
-`DONE.md` accumulates your finished work. Combined with the git log, you have a perfect history of what got done and when.
-
-### Migrating from todo-contract/v1
+## Migrating from todo-contract/v1
 
 If you have repos already using v1 (in-repo `TODOS.md`):
 
-```bash
-todos add /path/to/v1-repo --ingest
-```
+> **You:** "register my-app and import its existing todos"
+> **Agent:** *Runs `todos add /path/to/my-app --ingest`.*
 
-The ingest scanner reads `TODOS.md`, `.planning/todos/`, and `TODO:` source comments. Findings land in `~/.todos/<slug>/ingested.md`. Promote whichever ones you still care about into the inbox, leave the rest as historical.
+The ingest scanner reads `TODOS.md`, `.planning/todos/`, and `TODO:` source comments. Findings land in `~/.todos/<slug>/ingested.md` as candidates. Tell your agent which ones to promote into the inbox and which to drop.
 
-The in-repo `TODOS.md` is **never modified**. You can keep using v1 in that repo, or `git rm` the file once everything you care about is migrated. Your call.
+The in-repo `TODOS.md` is **never modified.** You can keep using v1 in that repo, or `git rm` the file once everything you care about is migrated. Your call.
 
 ---
 

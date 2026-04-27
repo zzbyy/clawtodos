@@ -2,6 +2,13 @@
 
 All notable changes to `clawtodos` will be documented in this file. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
 
+## [2.1.1] — 2026-04-27
+
+### Changed
+
+- **README rewritten around the conversational UX.** Replaced the CLI-first "Quick start" / "Wire up agents" / "How to use it" sections with three new ones: **First conversation — per agent** (concrete table of where to paste the install line in OpenClaw / Claude Code / Codex / Cursor), **Daily use — just talk to your agent** (natural-language dialogue examples for adding, reviewing, approving, deferring, rejecting, closing), and **A day in the life** (end-to-end narrative across three agents collaborating on the same task tree).
+- The CLI is still documented but moved to an "escape hatch" section after the agent-native flow. Reinforces that users don't need to memorize commands — talking to the agent is the primary UX.
+
 ## [2.1.0] — 2026-04-27
 
 ### Added
