@@ -2,6 +2,21 @@
 
 All notable changes to `clawtodos` will be documented in this file. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
 
+## [2.2.0] — 2026-04-27
+
+### Removed
+
+- **`install.py`** — deleted. It was redundant with `pip install` (both put `todos` on PATH and bootstrap `~/.todos/`), and confusing to users trying to understand which install path to use. The agent-native flow (`BOOTSTRAP.md`) and the manual fallback (`pip install`) both now use `pip` exclusively. One install path, no ambiguity.
+
+### Changed
+
+- README "Manual install" section trimmed to one option: `pip install --user git+https://github.com/zzbyy/clawtodos.git`. Dev install for contributors stays.
+- Snippet (`snippets/AGENTS_SNIPPET.md`) updated to reference only the pip command.
+
+### Migration
+
+If you ran the old `install.py`, no action needed — it produced exactly the same end state as `pip install`. The `todos` command on your PATH is unchanged.
+
 ## [2.1.1] — 2026-04-27
 
 ### Changed

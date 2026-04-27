@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Spec](https://img.shields.io/badge/spec-todo--contract%2Fv2-blue)](SPEC.md)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](pyproject.toml)
-[![Cross-platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-supported-brightgreen)](install.py)
+[![Cross-platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-supported-brightgreen)](#install)
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -99,19 +99,6 @@ todos init
 ```
 
 Then paste [`snippets/AGENTS_SNIPPET.md`](snippets/AGENTS_SNIPPET.md) into your agent instruction files yourself. See the table in [Wire up agents](#wire-up-agents) for which file goes where.
-</details>
-
-<details>
-<summary><b>clone + python install.py</b> — Python only, no pip</summary>
-
-```bash
-git clone https://github.com/zzbyy/clawtodos.git
-cd clawtodos
-python3 install.py        # macOS / Linux
-python  install.py        # Windows
-```
-
-Drops a `todos` wrapper into `~/.local/bin/` (Unix) or `%LOCALAPPDATA%\clawtodos\bin\` (Windows) and runs `todos init`. You still need to copy the snippet into your agent files yourself.
 </details>
 
 <details>

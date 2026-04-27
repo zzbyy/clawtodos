@@ -50,7 +50,7 @@ Recognized fields: `status` (open|in-progress|done|wont), `priority` (P0|P1|P2|P
 
 ### CLI primitives
 
-The `todos` CLI is on PATH after install (`pip install clawtodos` or run `python install.py`). Available verbs:
+The `todos` CLI is on PATH after install (`pip install --user git+https://github.com/zzbyy/clawtodos.git`). Available verbs:
 
 ```
 todos add <path-or-name>           # register a project
