@@ -1,0 +1,19 @@
+schema: todo-contract/v2
+projects:
+  - slug: my-app
+    type: code
+    path: /home/alice/code/my-app
+    ingest: true
+
+  - slug: side-project
+    type: code
+    path: /home/alice/code/side-project
+    ingest: false
+
+  - slug: personal/health
+    type: program
+    ingest: false
+
+  - slug: personal/learning
+    type: program
+    ingest: false

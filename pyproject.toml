@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clawtodos"
+version = "2.0.0"
+description = "Agent-native task manager. AI agents propose work; you approve. Cross-project, cross-tool, central."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+    { name = "zzbyy" }
+]
+keywords = ["todo", "task", "ai", "agent", "claude", "codex", "cursor", "openclaw", "todo-contract"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Office/Business :: Scheduling",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.scripts]
+todos = "clawtodos.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/zzbyy/clawtodos"
+Issues = "https://github.com/zzbyy/clawtodos/issues"
+Source = "https://github.com/zzbyy/clawtodos"
+
+[tool.setuptools.packages.find]
+where = ["src"]
