@@ -2,7 +2,7 @@
 
 All notable changes to `clawtodos` will be documented in this file. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
 
-## [Unreleased] — v3.1.0 (Compliance Kit)
+## [3.1.0] — 2026-04-28 (Compliance Kit)
 
 > **Multi-agent coordination + MCP server.** Agents on the same machine now coordinate via lease-based claims. Stdio MCP server lets any MCP-aware agent (Claude Desktop, Cursor, Continue, Zed) speak the protocol natively.
 
