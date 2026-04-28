@@ -2,6 +2,30 @@
 
 All notable changes to `clawtodos` will be documented in this file. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`todos ingest` no longer overwrites `done`/`wont` items.** Previously, ingesting a v1 in-repo `TODOS.md` forced **every** parsed entry to `status: pending`, including items that the v1 source already marked done (via `## Done` group heading) or killed (via `~~strikethrough~~` titles). The user then had to wade through completed work in the review queue. Ingest now preserves terminal states (`done`, `wont`); only genuinely active source entries become `pending`.
+
+### Changed
+
+- **`todos list` empty-active output now nudges the user toward pending.** When the default `active` filter returns no results but pending (or done) entries exist, the CLI prints a `note:` line so users don't think "nothing on the list" when really 24 ingested proposals are waiting for review. Example:
+  ```
+  $ todos list
+  (empty)
+  note: 24 pending review — `todos list --state pending` (or say 'anything new?')
+  ```
+  The agent snippet (`snippets/AGENTS_SNIPPET.md`) and OpenClaw skill are updated to surface this `note:` to users instead of just relaying "empty".
+
+### Added
+
+- **`todos list --json`.** Emits structured output for agent consumption: per-project todos plus per-project status counts plus top-level aggregate counts. Lets agents do morning-briefing generation and smart prioritization without parsing human-readable text. Example:
+  ```bash
+  todos list --json | jq '.counts'
+  todos list --state all --json | jq '.projects[] | select(.counts.pending > 0)'
+  ```
+
 ## [3.0.0] — 2026-04-28
 
 Schema redesign. Major rewrite of the file model and conversational vocabulary based on feedback that the v2 4-file split (`INBOX.md` / `TODOS.md` / `DONE.md` / `REJECTED.md`) was overengineered, and that `INBOX` collided with email semantics for users with Gmail-integrated agents.

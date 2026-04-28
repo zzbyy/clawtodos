@@ -56,7 +56,7 @@ Body — what / why / context, free-form markdown.
 | User says | You do |
 |---|---|
 | "add a todo to X: ..." / "remind me to fix Y in X" | Append with `status: open`, `agent: <self>` |
-| "what's on the list" / "what are the todos" / "what's left in X" | Show entries with `status: open` or `in-progress` (NOT pending, NOT wont) |
+| "what's on the list" / "what are the todos" / "what's left in X" | Show entries with `status: open` or `in-progress` (NOT pending, NOT wont). **If the active list is empty AND `pending` is non-empty, also surface the pending count in the same reply** (e.g. *"Active list is empty. You have 12 pending review — say 'anything new?' to see them."*). The CLI's `todos list` prints a `note:` line for this case; honor it when relaying to the user. |
 | "what's outstanding across everything" | Cross-project rollup from `~/.todos/INDEX.md` |
 | "anything new" / "what did the agents propose" | Show only `status: pending` |
 | "what should I work on" / "what should I tackle in N hours" | Filter `open`, sort by priority + effort + freshness; recommend top N |
@@ -81,7 +81,7 @@ The `todos` CLI is on PATH after install (`pip install --user git+https://github
 todos add <path-or-name>           # register a project
 todos new <slug> "<title>"          # add an open todo (interactive path)
 todos propose <slug> "<title>"      # add a pending todo (autonomous path)
-todos list [--state ...]            # default: active (open + in-progress)
+todos list [--state ...] [--json]    # default: active (open + in-progress)
 todos approve <slug> <id>           # pending -> open
 todos start   <slug> <id>           # open    -> in-progress
 todos done    <slug> <id>           # any     -> done
