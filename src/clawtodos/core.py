@@ -76,35 +76,71 @@ def _yaml_dumps(data: dict) -> str:
 
 
 def _yaml_loads_minimal(text: str) -> dict:
+    """Hand-rolled minimal YAML reader (used when PyYAML isn't installed).
+
+    Supports the two flat forms PyYAML's safe_dump emits for our use case:
+      - List items at column 0:    `- slug: x\\n  type: y`
+      - List items indented by 2:  `  - slug: x\\n    type: y`
+
+    The list-item indent is detected from the first list item encountered
+    after a `key:` line and used as the field-indent boundary for that list.
+    """
     out: dict = {}
     cur_list = None
     cur_item: dict | None = None
+    list_item_indent = -1  # number of leading spaces on the `- ` line (set on first item)
     for raw in text.splitlines():
         line = raw.rstrip()
         if not line or line.lstrip().startswith("#"):
             continue
-        m = re.match(r"^  - (\w+):\s*(.*)$", line)
-        if m:
-            if cur_list is None:
+
+        # List item start: `<indent>- key: val`
+        m = re.match(r"^(\s*)-\s+(\w+):\s*(.*)$", line)
+        if m and cur_list is not None:
+            indent = len(m.group(1))
+            if list_item_indent < 0 or indent == list_item_indent:
+                list_item_indent = indent
+                cur_item = {m.group(2): _coerce(m.group(3))}
+                cur_list.append(cur_item)
                 continue
-            cur_item = {m.group(1): _coerce(m.group(2))}
-            cur_list.append(cur_item)
-            continue
-        m = re.match(r"^    (\w+):\s*(.*)$", line)
-        if m and cur_item is not None:
-            cur_item[m.group(1)] = _coerce(m.group(2))
-            continue
+            # else fall through (different indent → not a list item for this list)
+
+        # List item field: `<list_item_indent + 2>key: val`
+        if cur_item is not None and list_item_indent >= 0:
+            field_indent = list_item_indent + 2
+            stripped = line[field_indent:] if line.startswith(" " * field_indent) else None
+            if stripped is not None and stripped and not stripped.startswith(" "):
+                m = re.match(r"^(\w+):\s*(.*)$", stripped)
+                if m:
+                    cur_item[m.group(1)] = _coerce(m.group(2))
+                    continue
+
+        # Top-level key
         m = re.match(r"^(\w+):\s*(.*)$", line)
         if m:
             key, val = m.group(1), m.group(2)
             if val == "":
+                # Block sequence on next line: `key:\n- item\n` or `key:\n  - item\n`
                 cur_list = []
                 out[key] = cur_list
                 cur_item = None
+                list_item_indent = -1
+            elif val.strip() == "[]":
+                # Inline empty sequence (PyYAML safe_dump emits this for `[]`)
+                out[key] = []
+                cur_list = None
+                cur_item = None
+                list_item_indent = -1
+            elif val.strip() == "{}":
+                out[key] = {}
+                cur_list = None
+                cur_item = None
+                list_item_indent = -1
             else:
                 out[key] = _coerce(val)
                 cur_list = None
                 cur_item = None
+                list_item_indent = -1
     return out
 
 
