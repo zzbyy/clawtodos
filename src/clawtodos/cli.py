@@ -53,10 +53,26 @@ from .core import (
     todos_path,
     _blank_file,
 )
+from . import events
+from .events import (
+    AlreadyClaimed,
+    EVENT_SCHEMA_VERSION,
+    HandEditCollision,
+    NotClaimedByActor,
+    TaskHeldByOtherActor,
+    UnknownTodo,
+    bootstrap_from_v30,
+    fold_events,
+    is_bootstrapped,
+    mutate,
+    read_events,
+    render_to_markdown,
+)
 
 
 # --------------------------------------------------------------------------------------
-# Git helpers — commit on every mutation when ROOT is itself a git repo.
+# Git helpers — used only by cmd_init for the very first commit. Per-mutation
+# commits now live inside events.mutate (which handles retry on index.lock).
 # --------------------------------------------------------------------------------------
 
 def _git_available() -> bool:
@@ -78,6 +94,33 @@ def git_commit(ctx: Context, message: str, files: Iterable[Path]) -> None:
         msg = (e.stdout or b"").decode() + (e.stderr or b"").decode()
         if "nothing to commit" not in msg:
             print(f"warning: git commit failed: {msg.strip()}", file=sys.stderr)
+
+
+# --------------------------------------------------------------------------------------
+# v3.1 mutation glue — auto-bootstrap + event construction
+# --------------------------------------------------------------------------------------
+
+def _ensure_v31(ctx: Context, slug: str) -> None:
+    """Auto-bootstrap a slug to v3.1 on first mutation. Idempotent."""
+    if is_bootstrapped(ctx, slug):
+        return
+    report = bootstrap_from_v30(ctx, slug)
+    if report["disambiguated"]:
+        for orig, new in report["disambiguated"]:
+            print(f"note: bootstrap renamed duplicate slug '{orig}' -> '{new}'",
+                  file=sys.stderr)
+
+
+def _now_iso_z() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _today_iso() -> str:
+    return dt.date.today().isoformat()
+
+
+def _current_state(ctx: Context, slug: str) -> dict[str, Todo]:
+    return fold_events(read_events(ctx, slug))
 
 
 # --------------------------------------------------------------------------------------
@@ -178,11 +221,11 @@ def _append_todo(ctx: Context, args, default_status: str) -> int:
         print(f"unknown slug: {args.slug}", file=sys.stderr)
         return 1
     ensure_project_dir(ctx, args.slug)
-    p = todos_path(ctx, args.slug)
-    tf = parse_todo_file(p)
+    _ensure_v31(ctx, args.slug)
 
-    today = dt.date.today().isoformat()
+    today = _today_iso()
     fields = {
+        "title": args.title,  # carried in the create event so render can recover it
         "status": default_status,
         "priority": (args.priority or "P2").upper(),
         "created": today,
@@ -194,15 +237,29 @@ def _append_todo(ctx: Context, args, default_status: str) -> int:
     if args.tags:
         fields["tags"] = args.tags
 
-    new = Todo(title=args.title, fields=fields, body=(args.body or ""))
-    if any(t.slug == new.slug and t.status not in ("done", "wont") for t in tf.todos):
-        print(f"warning: a todo with id '{new.slug}' already exists in {args.slug}",
-              file=sys.stderr)
-    tf.todos.append(new)
-    tf.write()
+    # Compute the canonical todo-slug from the title (same rule as Todo.slug).
+    placeholder = Todo(title=args.title)
+    todo_slug = placeholder.slug
+    full_id = f"{args.slug}/{todo_slug}"
 
-    git_commit(ctx, f"{default_status}: {args.slug}/{new.slug}", [p])
-    print(f"added: {args.slug}/{new.slug} (status={default_status})")
+    state = _current_state(ctx, args.slug)
+    if full_id in state and state[full_id].fields.get("status") not in ("done", "wont"):
+        print(f"warning: a todo with id '{todo_slug}' already exists in {args.slug}",
+              file=sys.stderr)
+
+    evt = {
+        "v": EVENT_SCHEMA_VERSION,
+        "ts": _now_iso_z(),
+        "actor": args.agent or "human",
+        "event": "create",
+        "id": full_id,
+        "fields": fields,
+    }
+    if args.body:
+        evt["body"] = args.body
+    mutate(ctx, args.slug, [evt],
+           commit_message=f"{default_status}: {full_id}")
+    print(f"added: {full_id} (status={default_status})")
     return 0
 
 
@@ -365,45 +422,67 @@ def _flip_status(ctx: Context, slug: str, todo_id: str, target: str,
         print(f"bad status: {target}. Must be one of {ALL_STATES}", file=sys.stderr)
         return 1
 
-    p = todos_path(ctx, slug)
-    tf = parse_todo_file(p)
-    todo = next((t for t in tf.todos if t.slug == todo_id), None)
-    if not todo:
-        print(f"not found: {slug}/{todo_id}", file=sys.stderr)
+    _ensure_v31(ctx, slug)
+    full_id = f"{slug}/{todo_id}"
+    state = _current_state(ctx, slug)
+    if full_id not in state:
+        print(f"not found: {full_id}", file=sys.stderr)
         return 1
 
-    prev = todo.status
+    prev = state[full_id].fields.get("status", "open")
     if prev == target:
-        print(f"already {target}: {slug}/{todo_id}")
+        print(f"already {target}: {full_id}")
         return 0
 
-    today = dt.date.today().isoformat()
-    todo.fields["status"] = target
-    todo.fields["updated"] = today
-    if target != "pending":
-        todo.fields.pop("deferred", None)
-    if target == "wont" and reason:
-        todo.fields["wont_reason"] = reason
+    # Map target status to the right event type. start/done/drop have dedicated
+    # events; everything else (pending, open) goes through `update`.
+    event_type_map = {"in-progress": "start", "done": "done", "wont": "drop"}
+    event_type = event_type_map.get(target, "update")
 
-    tf.write()
+    evt: dict = {
+        "v": EVENT_SCHEMA_VERSION,
+        "ts": _now_iso_z(),
+        "actor": "human",
+        "event": event_type,
+        "id": full_id,
+    }
+    if event_type == "drop" and reason:
+        evt["reason"] = reason
+    elif event_type == "update":
+        # `update` carries an explicit fields patch.
+        update_fields: dict = {"status": target, "updated": _today_iso()}
+        if target != "pending":
+            update_fields["deferred"] = None  # None => pop in _apply_event
+        evt["fields"] = update_fields
+
     suffix = f" ({reason})" if reason else ""
-    git_commit(ctx, f"{target}: {slug}/{todo_id}{suffix}", [p])
-    print(f"{slug}/{todo_id}: {prev} -> {target}")
+    mutate(ctx, slug, [evt], commit_message=f"{target}: {full_id}{suffix}")
+    print(f"{full_id}: {prev} -> {target}")
     return 0
 
 
 def cmd_defer(ctx: Context, args) -> int:
-    p = todos_path(ctx, args.slug)
-    tf = parse_todo_file(p)
-    todo = next((t for t in tf.todos if t.slug == args.id), None)
-    if not todo:
-        print(f"not found: {args.slug}/{args.id}", file=sys.stderr)
+    reg = load_registry(ctx)
+    if not find_project(reg, args.slug):
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
         return 1
-    todo.fields["deferred"] = args.until
-    todo.fields["updated"] = dt.date.today().isoformat()
-    tf.write()
-    git_commit(ctx, f"defer: {args.slug}/{args.id} until {args.until}", [p])
-    print(f"deferred: {args.slug}/{args.id} until {args.until}")
+    _ensure_v31(ctx, args.slug)
+    full_id = f"{args.slug}/{args.id}"
+    state = _current_state(ctx, args.slug)
+    if full_id not in state:
+        print(f"not found: {full_id}", file=sys.stderr)
+        return 1
+    evt = {
+        "v": EVENT_SCHEMA_VERSION,
+        "ts": _now_iso_z(),
+        "actor": "human",
+        "event": "defer",
+        "id": full_id,
+        "until": args.until,
+    }
+    mutate(ctx, args.slug, [evt],
+           commit_message=f"defer: {full_id} until {args.until}")
+    print(f"deferred: {full_id} until {args.until}")
     return 0
 
 
@@ -422,8 +501,8 @@ def cmd_ingest(ctx: Context, args) -> int:
 
 
 def do_ingest(ctx: Context, slug: str, source: Path) -> None:
-    """Scan source repo for existing todos. Append as `status: pending` so the
-    user can review and approve."""
+    """Scan source repo for existing todos. Construct create events with
+    status=pending (or terminal states preserved) and route through events.mutate."""
     found: list[Todo] = []
 
     # 1) v1 in-repo TODOS.md
@@ -432,11 +511,8 @@ def do_ingest(ctx: Context, slug: str, source: Path) -> None:
         tf = parse_todo_file(v1)
         for t in tf.todos:
             t.fields.setdefault("agent", "ingest")
-            # Preserve terminal states (done/wont) instead of forcing them
-            # back into the review queue. v1 conventions like `## Done`
-            # group headings or `~~strikethrough~~` titles surface as
-            # status=done at parse time; respect that. Only items that
-            # were genuinely active in the source repo go to pending.
+            # Preserve terminal states (done/wont). Only genuinely active items
+            # land in pending for human review.
             if t.status not in ("done", "wont"):
                 t.fields["status"] = "pending"
             found.append(t)
@@ -458,33 +534,58 @@ def do_ingest(ctx: Context, slug: str, source: Path) -> None:
         print(f"ingested 0 entries from {source}")
         return
 
-    # Append into the project's TODOS.md (don't overwrite existing entries by id)
-    p = todos_path(ctx, slug)
     project_dir(ctx, slug).mkdir(parents=True, exist_ok=True)
-    if not p.exists():
-        p.write_text(_blank_file(slug), encoding="utf-8")
-    tf = parse_todo_file(p)
-    existing_slugs = {t.slug for t in tf.todos}
+    _ensure_v31(ctx, slug)
+    state = _current_state(ctx, slug)
+
+    events_to_write: list[dict] = []
     new_count = 0
+    seen_in_batch: set[str] = set()
     for t in found:
-        if t.slug in existing_slugs:
+        full_id = f"{slug}/{t.slug}"
+        # Skip duplicates against existing state AND against earlier items in this batch.
+        if full_id in state or full_id in seen_in_batch:
             continue
-        tf.todos.append(t)
+        seen_in_batch.add(full_id)
+        fields = dict(t.fields)
+        fields["title"] = t.title
+        evt = {
+            "v": EVENT_SCHEMA_VERSION,
+            "ts": _now_iso_z(),
+            "actor": "ingest",
+            "event": "create",
+            "id": full_id,
+            "fields": fields,
+        }
+        if t.body:
+            evt["body"] = t.body
+        events_to_write.append(evt)
         new_count += 1
-    tf.write()
-    git_commit(ctx, f"ingest: {slug} ({new_count} new from {source.name})", [p])
-    print(f"ingested {new_count} new entries from {source} -> {p}")
+
+    if events_to_write:
+        mutate(ctx, slug, events_to_write,
+               commit_message=f"ingest: {slug} ({new_count} new from {source.name})")
+    print(f"ingested {new_count} new entries from {source} -> {todos_path(ctx, slug)}")
 
 
 def _all_todos(ctx: Context) -> list[tuple[str, Todo]]:
-    """Return (slug, Todo) pairs across every registered project."""
+    """Return (slug, Todo) pairs across every registered project.
+
+    For bootstrapped slugs, reads the event log directly (the source of truth).
+    For unbootstrapped slugs (legacy v3.0), falls back to parsing TODOS.md.
+    """
     reg = load_registry(ctx)
-    out = []
+    out: list[tuple[str, Todo]] = []
     for proj in reg.get("projects", []):
         slug = proj["slug"]
-        tf = parse_todo_file(todos_path(ctx, slug))
-        for t in tf.todos:
-            out.append((slug, t))
+        if is_bootstrapped(ctx, slug):
+            state = _current_state(ctx, slug)
+            for full_id in sorted(state.keys()):
+                out.append((slug, state[full_id]))
+        else:
+            tf = parse_todo_file(todos_path(ctx, slug))
+            for t in tf.todos:
+                out.append((slug, t))
     return out
 
 
@@ -655,6 +756,100 @@ def cmd_doctor(ctx: Context, _args) -> int:
 
 
 # --------------------------------------------------------------------------------------
+# v3.1 commands: claim / release / handoff / render
+# --------------------------------------------------------------------------------------
+
+def _resolve_actor(args) -> str:
+    """Pull --actor or fall back to $USER. Coordination commands need an explicit
+    identity; --agent on creation commands is for who proposed the work."""
+    actor = getattr(args, "actor", None) or os.environ.get("USER", "human")
+    return actor
+
+
+def cmd_claim(ctx: Context, args) -> int:
+    reg = load_registry(ctx)
+    if not find_project(reg, args.slug):
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
+        return 1
+    _ensure_v31(ctx, args.slug)
+    actor = _resolve_actor(args)
+    try:
+        result = events.claim(ctx, args.slug, args.id, actor=actor,
+                              lease_seconds=args.lease or events.DEFAULT_LEASE_SECONDS)
+    except UnknownTodo as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except AlreadyClaimed as e:
+        print(f"error: already_claimed by {e.claimed_by} until {e.lease_until}",
+              file=sys.stderr)
+        return 1
+    print(f"claimed: {result['id']} by {result['claimed_by']} until {result['lease_until']}")
+    return 0
+
+
+def cmd_release(ctx: Context, args) -> int:
+    reg = load_registry(ctx)
+    if not find_project(reg, args.slug):
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
+        return 1
+    _ensure_v31(ctx, args.slug)
+    actor = _resolve_actor(args)
+    try:
+        events.release(ctx, args.slug, args.id, actor=actor)
+    except UnknownTodo as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except NotClaimedByActor as e:
+        print(f"error: not_claimed_by_actor: {e}", file=sys.stderr)
+        return 1
+    print(f"released: {args.slug}/{args.id}")
+    return 0
+
+
+def cmd_handoff(ctx: Context, args) -> int:
+    reg = load_registry(ctx)
+    if not find_project(reg, args.slug):
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
+        return 1
+    _ensure_v31(ctx, args.slug)
+    actor = _resolve_actor(args)
+    try:
+        result = events.handoff(ctx, args.slug, args.id, actor=actor, to=args.to,
+                                note=args.note,
+                                lease_seconds=args.lease or events.DEFAULT_LEASE_SECONDS)
+    except UnknownTodo as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except TaskHeldByOtherActor as e:
+        print(f"error: task_held_by_other_actor: {e}", file=sys.stderr)
+        return 1
+    print(f"handoff: {result['id']} -> {result['handoff_to']} (lease {result['lease_until']})")
+    return 0
+
+
+def cmd_render(ctx: Context, args) -> int:
+    """Re-render TODOS.md from EVENTS.ndjson, discarding any hand-edits."""
+    reg = load_registry(ctx)
+    if not find_project(reg, args.slug):
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
+        return 1
+    _ensure_v31(ctx, args.slug)
+    with events.project_lock(ctx, args.slug):
+        text = render_to_markdown(ctx, args.slug)
+        # Record a render event so detect-and-block has a fresh hash to compare against.
+        render_evt = {
+            "v": EVENT_SCHEMA_VERSION,
+            "ts": _now_iso_z(),
+            "actor": _resolve_actor(args),
+            "event": "render",
+            "hash": events.render_hash(text),
+        }
+        events.append_event(ctx, args.slug, render_evt)
+    print(f"rendered: {todos_path(ctx, args.slug)}")
+    return 0
+
+
+# --------------------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------------------
 
@@ -752,6 +947,34 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("doctor", help="sanity check the central tree")
     a.set_defaults(func=cmd_doctor)
+
+    # v3.1 coordination commands
+    a = sub.add_parser("claim", help="claim a task with a lease (v3.1)")
+    a.add_argument("slug"); a.add_argument("id")
+    a.add_argument("--actor", help="agent identity (default: $USER)")
+    a.add_argument("--lease", type=int,
+                   help=f"lease duration in seconds (default: 3600, max: 86400)")
+    a.set_defaults(func=cmd_claim)
+
+    a = sub.add_parser("release", help="release a claim (v3.1)")
+    a.add_argument("slug"); a.add_argument("id")
+    a.add_argument("--actor", help="agent identity (default: $USER)")
+    a.set_defaults(func=cmd_release)
+
+    a = sub.add_parser("handoff", help="hand off a task to another actor (v3.1)")
+    a.add_argument("slug"); a.add_argument("id")
+    a.add_argument("--to", required=True, help="recipient agent slug")
+    a.add_argument("--actor", help="agent identity (default: $USER)")
+    a.add_argument("--note", help="optional handoff note")
+    a.add_argument("--lease", type=int,
+                   help=f"recipient's lease duration in seconds (default: 3600)")
+    a.set_defaults(func=cmd_handoff)
+
+    a = sub.add_parser("render", help="re-render TODOS.md from EVENTS.ndjson, "
+                                       "discarding any hand-edits (v3.1)")
+    a.add_argument("slug")
+    a.add_argument("--actor", help="agent identity for the render event")
+    a.set_defaults(func=cmd_render)
 
     return p
 

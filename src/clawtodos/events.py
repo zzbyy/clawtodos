@@ -276,19 +276,23 @@ def _apply_event(state: dict[str, Todo], evt: dict) -> None:
         t = _ensure_state(state, todo_id)
         t.fields["status"] = "in-progress"
         t.fields["updated"] = evt["ts"][:10]
+        # Match v3.0 _flip_status semantics: leaving pending clears `deferred`.
+        t.fields.pop("deferred", None)
         return
     if et == "done":
         t = _ensure_state(state, todo_id)
         t.fields["status"] = "done"
         t.fields["updated"] = evt["ts"][:10]
-        # done releases the claim implicitly
+        # done releases the claim implicitly and clears any deferral.
         t.fields.pop("claimed_by", None)
         t.fields.pop("lease_until", None)
+        t.fields.pop("deferred", None)
         return
     if et == "drop":
         t = _ensure_state(state, todo_id)
         t.fields["status"] = "wont"
         t.fields["updated"] = evt["ts"][:10]
+        t.fields.pop("deferred", None)
         if "reason" in evt and evt["reason"]:
             t.fields["wont_reason"] = evt["reason"]
         return
