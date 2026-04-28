@@ -78,20 +78,52 @@ Body — what / why / context, free-form markdown.
 The `todos` CLI is on PATH after install (`pip install --user git+https://github.com/zzbyy/clawtodos.git`). Available verbs:
 
 ```
-todos add <path-or-name>           # register a project
-todos new <slug> "<title>"          # add an open todo (interactive path)
-todos propose <slug> "<title>"      # add a pending todo (autonomous path)
+todos add <path-or-name>            # register a project
+todos new <slug> "<title>"           # add an open todo (interactive path)
+todos propose <slug> "<title>"       # add a pending todo (autonomous path)
 todos list [--state ...] [--json]    # default: active (open + in-progress)
-todos approve <slug> <id>           # pending -> open
-todos start   <slug> <id>           # open    -> in-progress
-todos done    <slug> <id>           # any     -> done
-todos drop    <slug> <id> [--reason]  # any   -> wont
+todos approve <slug> <id>            # pending -> open
+todos start   <slug> <id>            # open    -> in-progress
+todos done    <slug> <id>            # any     -> done
+todos drop    <slug> <id> [--reason] # any     -> wont
 todos defer   <slug> <id> --until YYYY-MM-DD
-todos ingest  <slug>                # scan source repo for existing todos
-todos index                         # regenerate ~/.todos/INDEX.md
-todos snapshot                      # write weekly snapshot
+todos ingest  <slug>                 # scan source repo for existing todos
+todos index                          # regenerate ~/.todos/INDEX.md
+todos snapshot                       # write weekly snapshot
 todos doctor
 ```
 
-Full spec: <https://github.com/zzbyy/clawtodos/blob/main/SPEC.md>.
+### Multi-agent coordination (v3.1+)
+
+When multiple AI agents work on the same task store on the same machine, they coordinate via lease-based claims. Conversational vocabulary:
+
+| User says | You do |
+|---|---|
+| *"claim X"* / *"I'll take X"* | `todos claim <slug> <id> --actor <self>` (default 1h lease, max 24h) |
+| *"release X"* / *"give it back"* | `todos release <slug> <id> --actor <self>` |
+| *"hand off X to <Y>"* / *"let <Y> finish this"* | `todos handoff <slug> <id> --actor <self> --to <Y>` |
+| *"what is <Y> working on"* | `todos list --json` then read `claimed_by` fields |
+
+Behavior contract:
+- Before starting non-trivial work on a task, **check `claimed_by`**. If another agent holds the claim and the lease hasn't expired, pick a different task.
+- For long-running work (>5 minutes), **re-claim periodically** to refresh the lease. Otherwise another agent may steal the task assuming you crashed.
+- `claim` succeeds when (a) nobody holds the task, (b) the lease has expired, or (c) you ARE the current holder (self-refresh).
+- `handoff` succeeds when (a) nobody holds the task (delegation: you're routing it to <Y> on the user's behalf), or (b) you ARE the current holder. Otherwise fails with `task_held_by_other_actor`.
+- Claims are **advisory hints**, not enforcement. `start`/`done`/`drop` do not check the claim. Other well-behaved agents respect it; misbehaving agents can ignore it. This is acceptable for v3.1's "cooperating agents on one user's machine" scope.
+
+### MCP server
+
+`pip install clawtodos[mcp]` installs `clawtodos-mcp`, an MCP stdio server. Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (or any other MCP client config):
+
+```json
+{
+  "mcpServers": {
+    "clawtodos": { "command": "clawtodos-mcp" }
+  }
+}
+```
+
+Tools exposed: `projects.list`, `tasks.{list,create,claim,release,handoff,start,done,drop}`. Errors carry stable `code` strings (`unknown_id`, `already_claimed`, `task_held_by_other_actor`, etc.) so agents can react programmatically rather than parsing prose.
+
+Full spec: <https://github.com/zzbyy/clawtodos/blob/main/SPEC.md> (v3.0) and <https://github.com/zzbyy/clawtodos/blob/main/SPEC-v3.1.md> (v3.1 deltas).
 <!-- END: clawtodos / todo-contract/v3 -->
