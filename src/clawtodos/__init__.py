@@ -1,3 +1,3 @@
-"""clawtodos — agent-native task manager (todo-contract/v2)."""
+"""clawtodos — agent-native task manager (todo-contract/v3)."""
 
-__version__ = "2.2.0"
+__version__ = "3.0.0"

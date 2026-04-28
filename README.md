@@ -3,29 +3,27 @@
 > **Agent-native task manager.** Multiple AI agents propose work. You approve. One central place to look across every project, code repo, and personal program. Repos stay clean. Nothing scattered.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Spec](https://img.shields.io/badge/spec-todo--contract%2Fv2-blue)](SPEC.md)
+[![Spec](https://img.shields.io/badge/spec-todo--contract%2Fv3-blue)](SPEC.md)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](pyproject.toml)
 [![Cross-platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-supported-brightgreen)](#install)
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│   Claude Code   Codex CLI   Cursor   OpenClaw   ...any agent     │
-│        │           │           │         │                       │
-│        └───────────┴───────────┴─────────┘                       │
-│                          │                                       │
-│                          ▼  proposes                             │
-│            ┌─────────────────────────────┐                       │
-│            │   ~/.todos/<project>/       │                       │
-│            │      INBOX.md  ←  agents    │                       │
-│            └──────────────┬──────────────┘                       │
-│                           │                                      │
-│                  approve / edit / defer / reject  ← YOU          │
-│                           │                                      │
-│                           ▼                                      │
-│            ┌─────────────────────────────┐                       │
-│            │      TODOS.md               │   ← canonical work    │
-│            │      DONE.md, REJECTED.md   │   ← audit trail       │
-│            └─────────────────────────────┘                       │
+│  Claude Code · Codex CLI · Cursor · OpenClaw · any AI agent      │
+│                              │                                   │
+│              "add X"         │       "what's on the list?"       │
+│              "I shipped X"   │       "what should I work on?"    │
+│              "drop X"        │       "anything new?"             │
+│                              ▼                                   │
+│              ┌──────────────────────────────────┐                │
+│              │   ~/.todos/<project>/TODOS.md    │                │
+│              │   ONE FILE. Lifecycle in status: │                │
+│              │   pending → open → in-progress   │                │
+│              │            → done                │                │
+│              │     side: → wont (tombstone)     │                │
+│              └──────────────────────────────────┘                │
+│                                                                  │
+│  Repos: read-only sources.        Git: free audit log.           │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -37,7 +35,7 @@ If you use multiple AI coding agents — Claude Code, Codex, Cursor, Antigravity
 
 `clawtodos` fixes that with three simple rules:
 
-1. **Agents propose. Humans approve.** Agents never write canonical state. They drop proposals into a per-project inbox; you decide what's real.
+1. **Agents propose. Humans approve.** Agents never write canonical state. They write to a per-project TODOS.md with a `status:` field. Default for explicit asks is `open` (already approved). Autonomous follow-ups go to `pending` for your review.
 2. **Repos stay clean.** Nothing in this system writes to your code repos. Personal todo state never pollutes a shared codebase.
 3. **One central home.** `~/.todos/` is the only place to look. Code projects, personal programs, side projects — all the same shape, all in one tree.
 
@@ -47,18 +45,22 @@ It's plain Markdown. Plain text. Git-versioned for free audit history. Zero daem
 
 ## How it works
 
-Each registered project gets a small directory at `~/.todos/<slug>/` with four files:
+Each registered project gets **one file** at `~/.todos/<slug>/TODOS.md`. Every entry has a `status:` field that encodes its lifecycle:
 
-| File          | Who writes  | What's in it                                |
-|---------------|-------------|---------------------------------------------|
-| `INBOX.md`    | AI agents   | Proposals waiting for your approval         |
-| `TODOS.md`    | You         | Canonical, approved work to do              |
-| `DONE.md`     | You         | Finished work (the audit trail)             |
-| `REJECTED.md` | You         | Declined proposals (so agents don't re-ask) |
+| `status:` | Meaning | Set by |
+|---|---|---|
+| `pending` | An agent proposed it autonomously; you haven't reviewed yet | Agent (rare path) |
+| `open` | Confirmed work, on the list, not started | You — or an agent after you said yes in conversation |
+| `in-progress` | Actively being worked | You / `todos start` |
+| `done` | Shipped | You / `todos done` |
+| `wont` | Decided not to do (kept as a tombstone so agents don't re-propose) | You / `todos drop` |
 
-When an AI agent — Claude Code, Codex, Cursor, OpenClaw — finishes a session and wants to leave a follow-up, it appends a markdown block to that project's `INBOX.md` with an `agent:` field naming itself. Your repo is untouched.
+**Two ways todos get added:**
 
-When you're ready to review, you run `todos list --state inbox` (or, if you're an OpenClaw user, just say *"review my inbox"* and the conversational skill walks you through). Four verbs, nothing else: **approve**, **edit**, **defer**, **reject**. Each one produces a single git commit in `~/.todos/`. That's your audit log.
+- **Interactive (the common case).** You're in conversation with an agent. You say *"add a todo: fix the auth bug"* — the agent appends an entry with `status: open`. You already approved by speaking.
+- **Autonomous (the rare case).** Claude Code finishes a coding session and notices a related concern. No human is watching. It appends with `status: pending`. You see it next time you ask *"anything new?"*.
+
+When you talk to your AI normally, it translates your sentences into the right status transitions. *"I shipped X"* → flips to done. *"drop Y, out of scope"* → flips to wont. *"defer Z to next Monday"* → adds `deferred:` field. Each transition produces one git commit in `~/.todos/`. That's your audit log.
 
 ---
 
@@ -79,10 +81,10 @@ Works in **OpenClaw**, **Claude Code**, **Codex CLI**, **Cursor**, or any agent 
 2. Run `pip install --user git+https://github.com/zzbyy/clawtodos.git`.
 3. Run `todos init` — creates `~/.todos/`, makes it a git repo.
 4. Discover which other AI agents you have (Claude Code, Codex, Cursor, OpenClaw) and ask which to wire up.
-5. Append the [agent snippet](snippets/AGENTS_SNIPPET.md) to each chosen instruction file (replacing any old v1 block automatically).
-6. Install the [`clawtodos-review`](openclaw/clawtodos-review) skill if you have OpenClaw.
+5. Append the [agent snippet](snippets/AGENTS_SNIPPET.md) to each chosen instruction file (replacing any old v1 or v2 block automatically).
+6. Install the [`clawtodos`](openclaw/clawtodos) skill if you have OpenClaw.
 7. Ask which directories on your machine are active projects, register each with `todos add`.
-8. Run `todos doctor` and offer to walk you through your first inbox.
+8. Run `todos doctor` and offer to walk you through your first list.
 
 About 2 minutes start to finish. Each step asks before doing anything that writes outside `~/.todos/`.
 
@@ -135,92 +137,109 @@ The agent reads `BOOTSTRAP.md`, runs the 8 phases, and asks you maybe 5 question
 
 ## Daily use — just talk to your agent
 
-After install you have **zero new commands to memorize.** Talk to your agent the way you already do. The agent translates your sentences into the right `todos` action.
+After install you have **zero new commands to memorize.** Talk to your agent the way you already do. The agent translates your sentences into the right `todos` action via a fixed conversational vocabulary documented in [SPEC.md §6](SPEC.md). Any clawtodos-conformant agent recognizes these phrases:
 
-### Adding a follow-up — *describe the work, don't write commands*
+| You say | Agent does |
+|---|---|
+| *"add a todo to `<X>`: …"* / *"remind me to fix `<Y>` in `<X>`"* / *"put `<W>` in the project todos"* | Append entry to that project's TODOS.md, `status: open`, today's date |
+| *"what's on the list"* / *"what are the todos"* / *"what's left in `<X>`"* | Show entries with status `open` or `in-progress` |
+| *"what's outstanding across everything"* | Cross-project rollup — counts by priority, top P0/P1, stale, done this week |
+| *"anything new"* / *"what did the agents propose"* | Show only `status: pending` entries |
+| *"what should I work on"* / *"what should I tackle in 2 hours"* | Filter `open`, sort by priority + effort + freshness, recommend top 3 matching the time budget |
+| *"I'm doing `<X>`"* / *"start `<X>`"* | Flip target to `in-progress` |
+| *"I shipped `<X>`"* / *"`<X>` is done"* | Flip to `done`, set `updated:` to today |
+| *"drop `<X>`"* / *"we won't do `<X>`"* / *"out of scope"* | Flip to `wont`, capture reason in `wont_reason` field |
+| *"defer `<X>` to `<date>`"* | Add `deferred:` field; hide from default list until date |
+| *"approve `<X>`"* / *"yes, add it"* | Flip `pending → open` |
+| *"weekly review"* / *"what shipped this week"* | Diff vs last week's snapshot — shipped, created, net delta, stale spotlight |
 
-> **You:** "leave a follow-up about the rate-limiting concern. P2."
+That's the whole vocabulary. Eleven phrase patterns, five statuses, one file per project. **You never type a `todos` command unless you want to.**
+
+### Adding — what it actually looks like
+
+> **You:** "add a todo to my-app: fix MW API rate-limit silent failure. P1, effort S."
 >
-> **Agent:** *Detects you're in `my-app`, appends a properly-formatted entry to `~/.todos/my-app/INBOX.md` with `agent: claude-code` and today's date.*
+> **Agent:** *Detects you're in `my-app`, appends an entry to `~/.todos/my-app/TODOS.md` with `status: open`, `agent: claude-code`, `priority: P1`, `effort: S`, today's date.*
 >
-> **Agent:** "Added to my-app inbox as 'Add rate-limiting to /auth/refresh' (P2). Your repo working tree is unchanged."
+> **Agent:** "Added to my-app TODOS as 'Fix MW API rate-limit silent failure' (P1, S). Your repo working tree is unchanged."
 
-### Reviewing the inbox — *the daily ritual*
+### The cross-project rollup — *"what's outstanding?"*
 
-In **OpenClaw** (using the dedicated `clawtodos-review` skill the bootstrap installed):
-
-> **You:** "review my inbox"
+> **You:** "what's outstanding across everything?"
 >
-> **OpenClaw:** "You have 4 proposals across 3 projects. Walking now.
+> **Agent:** *Runs `todos index` → reads `~/.todos/INDEX.md` → summarizes:*
 >
-> **(1/4) my-app** — proposed by claude-code _(2026-04-27)_
-> ### Fix auth token refresh on expiry
-> Priority: **P1** · Effort: **S**
-> Token refresh fails when expiry is exactly at request time. Repro…
+> > 📋 38 active · 4 done this week · 3 pending review · 5 stale (>30d)
+> >
+> > 🔥 P0/P1 (3):
+> > • my-app — Fix MW API rate-limit silent failure (P1, S)
+> > • side-project — Magika auto-detect follow-up (P1, M)
+> > • personal/health — Annual physical (P1, deadline May 14)
+> >
+> > Want me to drill into any project, or recommend what to tackle next?
+
+### Smart prioritization — *"what should I tackle in 2 hours?"*
+
+> **You:** "I have 2 hours before pickup. What should I tackle?"
 >
-> **Approve / Edit / Defer / Reject?**"
+> **Agent:** *Reads INDEX, scores by priority + effort + freshness:*
 >
-> **You:** "approve"
->
-> **OpenClaw:** "✅ Moved to TODOS. Commit `3406585`. (2/4) …"
-
-In **Claude Code / Codex / Cursor** (no dedicated skill — same flow, slightly less polished):
-
-> **You:** "review my inbox"
->
-> **Agent:** *Runs `todos list --state inbox`, presents each entry, asks for your verdict, calls the right CLI verb. Identical end result.*
-
-### One-shot verbs — *when you already know what you want*
-
-> **You:** "approve the auth fix in my-app"
-> **Agent:** *Runs `todos approve my-app fix-auth-token-refresh-on-expiry`.*
-
-> **You:** "defer the docs cleanup until next Monday"
-> **Agent:** *Computes date → runs `todos defer my-app document-event-stream-api --until 2026-05-04`.*
-
-> **You:** "reject the rename proposal — it's out of scope"
-> **Agent:** *Runs `todos reject my-app rename-everything --reason "out of scope"`.*
+> > Based on priority, effort, and freshness:
+> > - **my-app — MW API fix** — P1, S effort, ~1 hour. Fastest win.
+> > - **side-project — Dead-link cleanup** — P2, XS effort, 10 min while you wait.
+> > - skip personal/health — needs physical presence, not desk time.
+> >
+> > Want me to run `todos start my-app fix-mw-api-rate-limit-silent-failure` and pull up the body?
 
 ### Closing finished work
 
-> **You:** "I shipped the auth fix and the rate-limiting"
-> **Agent:** *Runs `todos done` for both, summarizes.*
+> **You:** "I shipped the MW API fix and the dead-link cleanup."
+>
+> **Agent:** *Runs `todos done` for both. Summary follows.*
 
-That's the entire daily UX. **You never type a `todos` command unless you want to.**
+### Weekly review — Sunday evening
+
+> **You:** "weekly review"
+>
+> **Agent:** *Writes this week's snapshot, diffs vs last week:*
+>
+> > 📊 Weekly review — 2026-W18 (Apr 22–28)
+> > Shipped: 4 · Created: 6 · Net: +2 backlog. Manageable.
+> > Stale spotlight: "Cerebro provider integration" hasn't moved in 47 days. Schedule, demote, or drop?
 
 ---
 
 ## A day in the life
 
-**8:30 AM — OpenClaw on your phone or laptop**
+**8:30 AM — OpenClaw**
 
-> **You:** "review my inbox"
+> **You:** "what's outstanding across everything?"
 >
-> OpenClaw walks 4 proposals from yesterday. You approve 2, defer 1 to next week, reject 1 ("out of scope, won't ship this quarter"). Inbox empty. ~3 minutes.
+> OpenClaw runs `todos index`, summarizes: *38 active, 3 P1s, 4 done this week, 3 pending review.* You ask to drill into the pending. OpenClaw walks 3 proposals — you approve 2, drop 1 ("out of scope this quarter"). ~3 minutes.
 
 **10:00 AM — Claude Code, working in `~/code/my-app`**
 
-> **You:** "fix the auth refresh bug"
+> **You:** "fix the MW API rate-limit issue"
 >
-> Claude Code reads `~/.todos/my-app/TODOS.md`, sees the approved task, fixes it. As it wraps up:
+> Claude Code reads `~/.todos/my-app/TODOS.md`, sees the approved task, fixes it. Wraps up:
 >
-> **Claude Code:** "Done. While I was in there I noticed `/auth/refresh` isn't rate-limited — that's a separate concern. Want me to leave a follow-up?"
+> **Claude Code:** "Done. While I was in there I noticed `/auth/refresh` isn't rate-limited — separate concern. Want me to leave a follow-up?"
 >
 > **You:** "yeah, P2."
 >
-> Claude Code appends a proposal to `~/.todos/my-app/INBOX.md`. The auth fix is committed to your repo cleanly; no todo state leaked into the diff.
+> Claude Code runs `todos new my-app "Add rate-limiting to /auth/refresh" --priority P2 --agent claude-code`. Your repo's working tree has only the rate-limit fix; no todo state leaked into the commit.
 
 **3:00 PM — Codex on a different repo (`side-project`)**
 
-> **You:** "what's left to do here?"
+> **You:** "what's left in side-project?"
 >
-> Codex runs `todos list --slug side-project --state todos` → shows the 3 queued items for that project only.
+> Codex runs `todos list --slug side-project` → shows the 5 active items.
 
-**6:00 PM — OpenClaw again**
+**6:00 PM — OpenClaw**
 
-> **You:** "I shipped the auth fix and the rate-limiting"
+> **You:** "I shipped the MW API fix and the rate-limiting."
 >
-> **OpenClaw:** "Marked 2 done. Today: 3 approved, 2 shipped, 1 deferred, 1 rejected. Inbox: 1 new (claude-code added the rate-limiting follow-up at 10:14 — already approved by you at 10:15). Solid day."
+> **OpenClaw:** *Runs `todos done` for both.* "Marked 2 done. Today: 3 approved, 2 shipped, 1 dropped. 1 new pending (claude-code's rate-limiting follow-up — already approved at 10:14). Solid day."
 
 You wrote zero CLI commands. Three different agents collaborated on the same task tree without colliding. Your repos stayed clean.
 
@@ -231,7 +250,8 @@ You wrote zero CLI commands. Three different agents collaborated on the same tas
 You never *have* to use the CLI. But it's there for scripting, automation, or when you want one fast action without a chat round-trip.
 
 ```bash
-todos list --state inbox                              # see what's pending
+todos list                                            # active items (open + in-progress)
+todos list --state pending                            # what agents proposed
 todos approve my-app fix-auth-token-refresh-on-expiry # accept a proposal
 todos defer  my-app docs-cleanup --until 2026-05-04   # delay re-review
 todos reject my-app rename-everything --reason "..."  # decline
@@ -242,7 +262,7 @@ todos ingest my-app                                   # one-shot import of v1 to
 todos doctor                                          # sanity check
 ```
 
-Common scripting use: a cron job that runs `todos list --state inbox` once a morning and emails you if the inbox has more than 10 entries.
+Common scripting use: a cron job that runs `todos list --state pending` once a morning and emails you if there are more than 10 unreviewed proposals.
 
 ---
 
@@ -253,7 +273,7 @@ If you have repos already using v1 (in-repo `TODOS.md`):
 > **You:** "register my-app and import its existing todos"
 > **Agent:** *Runs `todos add /path/to/my-app --ingest`.*
 
-The ingest scanner reads `TODOS.md`, `.planning/todos/`, and `TODO:` source comments. Findings land in `~/.todos/<slug>/ingested.md` as candidates. Tell your agent which ones to promote into the inbox and which to drop.
+The ingest scanner reads `TODOS.md` and `.planning/todos/` in your source repo. Findings land in `~/.todos/<slug>/TODOS.md` with `status: pending`. Tell your agent which ones to approve (`pending → open`) and which to drop (`pending → wont`).
 
 The in-repo `TODOS.md` is **never modified.** You can keep using v1 in that repo, or `git rm` the file once everything you care about is migrated. Your call.
 
@@ -269,10 +289,10 @@ todos add <path-or-name> [--type code|program]   # register a project
                          [--slug <name>]
 
 todos list [--slug <slug>]                        # list todos
-           [--state inbox|todos|done|rejected|all]
+           [--state pending|open|in-progress|done|wont|active|all]
 
-todos approve <slug> <id>                         # INBOX -> TODOS
-todos reject  <slug> <id> [--reason "<text>"]     # INBOX -> REJECTED
+todos approve <slug> <id>                         # pending -> open
+todos drop    <slug> <id> [--reason "<text>"]     # any -> wont (tombstone)
 todos defer   <slug> <id> --until YYYY-MM-DD      # delay re-review
 todos done    <slug> <id>                         # TODOS -> DONE
 todos move    <slug> <id> --to <state>            # generic move
@@ -294,19 +314,16 @@ After `todos init` and a couple of `todos add` calls:
 
 ```
 ~/.todos/
-├── .git/                          ← git repo, 1 commit per verdict
+├── .git/                          ← git repo, 1 commit per status transition
 ├── README.md                      ← what this directory is
 ├── registry.yaml                  ← list of registered projects
 ├── INDEX.md                       ← cross-project rollup (run `todos index`)
+├── snapshots/
+│   └── 2026-W18.json              ← weekly snapshot for diff-based reviews
 ├── my-app/
-│   ├── INBOX.md                   ← agents append here
-│   ├── TODOS.md                   ← humans approve into here
-│   ├── DONE.md                    ← finished work
-│   ├── REJECTED.md                ← declined proposals (audit trail)
-│   └── ingested.md                ← read-only mirror of v1 todos (if any)
+│   └── TODOS.md                   ← ONE file. All entries, all statuses.
 └── personal/
     └── health/
-        ├── INBOX.md
         └── TODOS.md
 ```
 
@@ -314,16 +331,16 @@ After `todos init` and a couple of `todos add` calls:
 
 ## Compatibility
 
-| Agent / Tool                  | Reads INBOX/TODOS | Writes proposals  | Notes                                              |
+| Agent / Tool                  | Reads TODOS.md    | Writes todos      | Notes                                              |
 |-------------------------------|-------------------|-------------------|----------------------------------------------------|
 | Claude Code                   | ✓                 | ✓                 | Add snippet to `~/.claude/CLAUDE.md`               |
 | Codex CLI                     | ✓                 | ✓                 | Add snippet to `~/.codex/AGENTS.md` or per-repo    |
 | Cursor                        | ✓                 | ✓                 | Add snippet to `<repo>/.cursorrules`               |
-| OpenClaw                      | ✓                 | ✓                 | + dedicated `clawtodos-review` skill               |
+| OpenClaw                      | ✓                 | ✓                 | + dedicated `clawtodos` skill (handles full conversational vocab) |
 | Antigravity                   | ✓                 | ✓                 | Per-repo `AGENTS.md`                               |
 | Anything with an instruction file | ✓             | ✓                 | The contract is voluntary social — agents honor it because the snippet tells them to |
 
-The contract is documented in [SPEC.md](SPEC.md) (`todo-contract/v2`). Any tool can read or write the format directly without going through the `todos` CLI.
+The contract is documented in [SPEC.md](SPEC.md) (`todo-contract/v3`). Any tool can read or write the format directly without going through the `todos` CLI.
 
 ---
 
@@ -333,9 +350,9 @@ The wire format is documented in [SPEC.md](SPEC.md):
 
 - File layout and lifecycle states
 - Per-todo block syntax (frontmatter, fields, body, terminators)
-- The four verbs (approve / edit / defer / reject)
+- The five lifecycle states and transitions (approve / start / done / drop / defer)
 - Agent contract
-- Coexistence with todo-contract/v1
+- Coexistence with todo-contract/v1 and v2
 - Versioning policy
 
 Reference implementation: [`src/clawtodos/cli.py`](src/clawtodos/cli.py). Single module, Python stdlib only.
@@ -344,12 +361,13 @@ Reference implementation: [`src/clawtodos/cli.py`](src/clawtodos/cli.py). Single
 
 ## Project status
 
-`v2.0.0` — first stable release. Schema is locked at `todo-contract/v2`. The CLI is intentionally minimal; new verbs require a matching spec change.
+`v3.0.0` — single-file model. Schema locked at `todo-contract/v3`. Five statuses (`pending` / `open` / `in-progress` / `done` / `wont`) encode the lifecycle. CLI is intentionally minimal; new verbs require a matching spec change.
 
 Roadmap (post-2.0, no commitments):
 
 - **`todos archive`** — sweep old DONE entries into year-stamped files
-- **External capture bridges** — Apple Reminders, Obsidian quick-add (writes into appropriate INBOX)
+- **`todos archive`** — sweep old `done` entries into year-stamped files when a project's TODOS.md grows large
+- **External capture bridges** — Apple Reminders, Obsidian quick-add (writes `status: pending` entries)
 - **TUI dashboard** — keyboard-driven review for users who want a non-conversational UI
 - **`todos doctor --fix`** — auto-correct common drift (in-repo TODOS.md created by misbehaving agents)
 
@@ -374,9 +392,9 @@ todos --root /tmp/cltest doctor
 
 ## Credits
 
-`clawtodos` is the v2 of [`todo-contract`](https://github.com/zzbyy/todo-contract), which I shipped earlier. v1 is per-repo and voluntary; v2 is central and approval-gated. v1 is not deprecated — if your needs are met by per-repo todos, stay on v1.
+`clawtodos` evolved from [`todo-contract/v1`](https://github.com/zzbyy/todo-contract). v1 is per-repo and voluntary; v3 (this repo) is central, single-file-per-project, with the full lifecycle in a `status:` field. v1 is not deprecated — if your needs are met by per-repo todos, stay on v1.
 
-The conversational `clawtodos-review` skill is named for [OpenClaw](https://openclaw.com), my personal-life AI assistant.
+The `clawtodos` skill is named for [OpenClaw](https://openclaw.com), my personal-life AI assistant.
 
 ---
 

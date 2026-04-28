@@ -2,28 +2,39 @@
 This is the snippet to drop into each agent's global or repo-level
 instruction file (CLAUDE.md, AGENTS.md, .cursorrules, OpenClaw global rules).
 
-It tells any AI agent how to handle persistent todos under the central
-clawtodos / todo-contract/v2 system: https://github.com/zzbyy/clawtodos
+It tells any AI agent how to handle persistent todos under clawtodos /
+todo-contract/v3: https://github.com/zzbyy/clawtodos
 
 Copy everything between the BEGIN and END markers.
 -->
 
-<!-- BEGIN: clawtodos / todo-contract/v2 -->
-## Persistent todos — clawtodos (todo-contract/v2)
+<!-- BEGIN: clawtodos / todo-contract/v3 -->
+## Persistent todos — clawtodos (todo-contract/v3)
 
-This system uses a **central** todo store at `~/.todos/` (or `$TODO_CONTRACT_ROOT`). You propose; the user approves. You **never** write to canonical state, and **never** modify the repo you're working in for todo purposes.
+This system uses a **central** todo store at `~/.todos/` (or `$TODO_CONTRACT_ROOT`). One file per project: `~/.todos/<slug>/TODOS.md`. The lifecycle of every entry is encoded in a `status:` field — there are no separate INBOX / DONE / REJECTED files.
 
 ### When you start non-trivial work
 
 1. Detect the project slug: walk up from `cwd` and find the first directory whose path matches an entry in `~/.todos/registry.yaml`. The matching `slug:` is your project. If nothing matches, ask the user or use the slug `unsorted`.
-2. Read these files for context (skip silently if missing):
-   - `~/.todos/<slug>/INBOX.md` — proposals waiting for human review
-   - `~/.todos/<slug>/TODOS.md` — approved canonical todos
-   - `~/.todos/<slug>/REJECTED.md` — proposals already declined; do **not** re-propose
+2. Read `~/.todos/<slug>/TODOS.md` to know what's pending and what's already been declined (so you don't re-propose a `wont` entry).
 
-### When you want to leave a follow-up todo
+### The five statuses
 
-APPEND a block to `~/.todos/<slug>/INBOX.md` in this format:
+| Status | Meaning |
+|---|---|
+| `pending` | An agent proposed this autonomously; awaits user confirmation. |
+| `open` | Confirmed by the user, on the list, not started. |
+| `in-progress` | Actively being worked. |
+| `done` | Shipped. |
+| `wont` | Decided not to do (kept as tombstone — agents see it and don't re-propose). |
+
+### When you want to add a todo — two paths
+
+**Interactive path (the common case).** The user explicitly told you to add it ("add a todo: ..." / "remind me to ..."). The user already approved by speaking. Append the entry with `status: open`.
+
+**Autonomous path (the rare case).** You're finishing work and want to record a follow-up; the user isn't in the conversation. Append with `status: pending`. The user reviews next time they ask "anything new?".
+
+Either way, append a block to `~/.todos/<slug>/TODOS.md` in this format:
 
 ```markdown
 ### <Short, action-oriented title>
@@ -38,15 +49,29 @@ Body — what / why / context, free-form markdown.
 ---
 ```
 
-`<your-agent-name>` is one of: `claude-code`, `codex`, `cursor`, `antigravity`, `openclaw`, or another short slug naming you. The `agent:` field is **required** in INBOX.
+`<your-agent-name>` is one of: `claude-code`, `codex`, `cursor`, `antigravity`, `openclaw`, or another short slug naming you. The `agent:` field is **required** on `status: pending` entries; recommended otherwise.
 
-Recognized fields: `status` (open|in-progress|done|wont), `priority` (P0|P1|P2|P3), `effort` (XS|S|M|L|XL), `agent`, `created`, `updated`, `tags` (comma-separated), `deferred` (YYYY-MM-DD).
+### Conversational vocabulary (recognize these phrases — they're spec)
+
+| User says | You do |
+|---|---|
+| "add a todo to X: ..." / "remind me to fix Y in X" | Append with `status: open`, `agent: <self>` |
+| "what's on the list" / "what are the todos" / "what's left in X" | Show entries with `status: open` or `in-progress` (NOT pending, NOT wont) |
+| "what's outstanding across everything" | Cross-project rollup from `~/.todos/INDEX.md` |
+| "anything new" / "what did the agents propose" | Show only `status: pending` |
+| "what should I work on" / "what should I tackle in N hours" | Filter `open`, sort by priority + effort + freshness; recommend top N |
+| "I'm doing X" / "start X" | Flip target to `in-progress` |
+| "I shipped X" / "X is done" | Flip to `done`, set `updated` to today |
+| "drop X" / "we won't do X" | Flip to `wont`, capture reason in `wont_reason` field and commit |
+| "defer X to `<date>`" | Add `deferred:` field; hide from default list until date |
+| "approve X" / "yes, add it" | Flip `pending → open` |
+| "weekly review" / "what shipped this week" | Diff vs last week's snapshot in `~/.todos/snapshots/` |
 
 ### What you MUST NOT do
 
-- **Do not modify `TODOS.md`, `DONE.md`, or `REJECTED.md`.** Those are canonical/audit state. Only the user (or a human-approved review tool) writes there.
-- **Do not modify any in-repo `TODOS.md`.** Repos are read-only from this system. If you see an in-repo `TODOS.md` (legacy todo-contract/v1), leave it alone.
-- **Do not auto-approve your own proposals.** Always write to INBOX, never to TODOS.
+- **Do not modify any in-repo `TODOS.md`** in the source repo. Repos are read-only from this system. Leave any in-repo legacy file alone.
+- **Do not auto-approve your own proposals** — `propose` writes `pending`; only the user (or an explicit user instruction) flips to `open`.
+- **Do not re-propose `wont` entries.** If a matching title appears with `status: wont`, the user already declined it. Don't bring it up again unless the user prompts.
 
 ### CLI primitives
 
@@ -54,19 +79,19 @@ The `todos` CLI is on PATH after install (`pip install --user git+https://github
 
 ```
 todos add <path-or-name>           # register a project
-todos list [--state inbox|todos|done|rejected|all]
-todos approve <slug> <id>          # promote INBOX -> TODOS  (human action)
-todos reject  <slug> <id> [--reason]
+todos new <slug> "<title>"          # add an open todo (interactive path)
+todos propose <slug> "<title>"      # add a pending todo (autonomous path)
+todos list [--state ...]            # default: active (open + in-progress)
+todos approve <slug> <id>           # pending -> open
+todos start   <slug> <id>           # open    -> in-progress
+todos done    <slug> <id>           # any     -> done
+todos drop    <slug> <id> [--reason]  # any   -> wont
 todos defer   <slug> <id> --until YYYY-MM-DD
-todos done    <slug> <id>          # TODOS -> DONE
-todos ingest  <slug>               # one-shot scan of source repo for existing todos
-todos index                        # regenerate INDEX.md
+todos ingest  <slug>                # scan source repo for existing todos
+todos index                         # regenerate ~/.todos/INDEX.md
+todos snapshot                      # write weekly snapshot
 todos doctor
 ```
 
-### When the user asks you to "review my inbox"
-
-If your skill set includes the `clawtodos-review` flow (OpenClaw users — see <https://github.com/zzbyy/clawtodos/tree/main/openclaw/clawtodos-review>), walk pending INBOX entries one at a time and ask the user to approve / edit / defer / reject each one. Otherwise, run `todos list --state inbox` and walk the user through the entries manually.
-
 Full spec: <https://github.com/zzbyy/clawtodos/blob/main/SPEC.md>.
-<!-- END: clawtodos / todo-contract/v2 -->
+<!-- END: clawtodos / todo-contract/v3 -->

@@ -1,29 +1,35 @@
 #!/usr/bin/env python3
 """
-todos — reference CLI for clawtodos / todo-contract/v2.
+todos — reference CLI for clawtodos / todo-contract/v3.
 
 Single-module, Python stdlib only. Cross-platform (macOS, Linux, Windows).
 
   todos init                                 # bootstrap ~/.todos/, git init
   todos add <path-or-name> [--type code|program] [--ingest|--no-ingest]
-  todos list [--slug <slug>] [--state inbox|todos|done|rejected|all]
-  todos move <slug> <id> --to inbox|todos|done|rejected [--reason <text>]
-  todos approve <slug> <id>
-  todos reject  <slug> <id> [--reason <text>]
+  todos list [--slug <slug>] [--state pending|open|in-progress|done|wont|active|all]
+  todos new <slug> "<title>" [--priority P2] [--effort M] [--agent <name>]
+  todos propose <slug> "<title>" [--priority P2] [--effort M] [--agent <name>]
+  todos approve <slug> <id>                  # pending -> open
+  todos start   <slug> <id>                  # open    -> in-progress
+  todos done    <slug> <id>                  # any     -> done
+  todos drop    <slug> <id> [--reason <text>] # any    -> wont
   todos defer   <slug> <id> --until YYYY-MM-DD
-  todos done    <slug> <id>
-  todos ingest  <slug>
-  todos index
+  todos ingest  <slug>                        # one-shot scan of source repo
+  todos index                                 # regenerate ~/.todos/INDEX.md
+  todos snapshot                              # write weekly snapshot
   todos doctor
 
 The <id> is the slugified title (lowercased, non-alnum -> -) within a project.
 Use `todos list --slug <slug>` to see ids.
+
+Default `todos list` (no --state) shows only "active" entries (open + in-progress).
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import re
 import shutil
@@ -37,9 +43,12 @@ from typing import Iterable
 # Config
 # --------------------------------------------------------------------------------------
 
-SCHEMA = "todo-contract/v2"
-STATES = ("INBOX", "TODOS", "DONE", "REJECTED")
-STATE_FILES = {s: f"{s}.md" for s in STATES}
+SCHEMA = "todo-contract/v3"
+
+# All valid states. The order is the lifecycle order: pending → open → in-progress → done,
+# with wont as a side-path (tombstone).
+ALL_STATES = ("pending", "open", "in-progress", "done", "wont")
+ACTIVE_STATES = ("open", "in-progress")
 
 PRIORITY_ALIASES = {
     "urgent": "P0", "critical": "P0",
@@ -49,14 +58,13 @@ PRIORITY_ALIASES = {
     "p0": "P0", "p1": "P1", "p2": "P2", "p3": "P3",
 }
 EFFORT_TOKENS = {"XS", "S", "M", "L", "XL"}
-STATUS_VALUES = {"open", "in-progress", "done", "wont"}
 
 
 def default_root() -> Path:
     return Path(os.environ.get("TODO_CONTRACT_ROOT", str(Path.home() / ".todos"))).expanduser()
 
 
-# Mutable, set by main() once flags are parsed.
+# Mutable; set by main() once flags are parsed.
 ROOT: Path = default_root()
 
 
@@ -152,7 +160,7 @@ def _emit_scalar(v) -> str:
 
 
 # --------------------------------------------------------------------------------------
-# Markdown parsing — matches SPEC §4
+# Markdown parsing — todo-contract/v3 §4 (per-todo block)
 # --------------------------------------------------------------------------------------
 
 @dataclass
@@ -160,15 +168,15 @@ class Todo:
     title: str
     fields: dict[str, str] = field(default_factory=dict)
     body: str = ""
-    in_done_group: bool = False
 
     @property
     def status(self) -> str:
-        if self.in_done_group:
-            return "done"
-        if self.title.startswith("~~") and self.title.endswith("~~"):
-            return "done"
-        return self.fields.get("status", "open")
+        s = self.fields.get("status", "open").lower()
+        return s if s in ALL_STATES else "open"
+
+    @property
+    def priority(self) -> str:
+        return self.fields.get("priority", "P2")
 
     @property
     def slug(self) -> str:
@@ -179,17 +187,17 @@ class Todo:
     def to_md(self) -> str:
         lines = [f"### {self.title}"]
         for k in ("status", "priority", "effort", "agent", "created", "updated", "tags",
-                  "deferred", "rejected_at", "rejected_reason"):
+                  "deferred", "wont_reason"):
             if k in self.fields:
                 lines.append(f"- **{k}:** {self.fields[k]}")
         canonical = {"status", "priority", "effort", "agent", "created", "updated", "tags",
-                     "deferred", "rejected_at", "rejected_reason"}
+                     "deferred", "wont_reason"}
         for k, v in self.fields.items():
             if k not in canonical:
                 lines.append(f"- **{k}:** {v}")
         if self.body.strip():
             lines.append("")
-            lines.append(self.body.rstrip())
+            lines.append(self.body.strip())
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -249,7 +257,7 @@ def parse_todo_file(path: Path) -> TodoFile:
     preamble = "\n".join(preamble_lines).strip("\n")
 
     todos: list[Todo] = []
-    in_done_group = False
+    in_done_group = False  # legacy v1 compat: ## Done section auto-marks done
     while i < len(lines):
         line = lines[i]
         if line.startswith("## "):
@@ -259,7 +267,7 @@ def parse_todo_file(path: Path) -> TodoFile:
             continue
         if line.startswith("### "):
             title = line[4:].strip()
-            t = Todo(title=title, in_done_group=in_done_group)
+            t = Todo(title=title)
             i += 1
             body_lines: list[str] = []
             while i < len(lines):
@@ -278,6 +286,11 @@ def parse_todo_file(path: Path) -> TodoFile:
             while body_lines and not body_lines[-1].strip():
                 body_lines.pop()
             t.body = "\n".join(body_lines)
+            # legacy v1 compat: ~~strikethrough~~ → done
+            if t.title.startswith("~~") and t.title.endswith("~~"):
+                t.fields.setdefault("status", "done")
+            elif in_done_group:
+                t.fields.setdefault("status", "done")
             todos.append(t)
             continue
         i += 1
@@ -327,23 +340,26 @@ def project_dir(slug: str) -> Path:
     return ROOT / slug
 
 
-def state_path(slug: str, state: str) -> Path:
-    return project_dir(slug) / STATE_FILES[state]
+def todos_path(slug: str) -> Path:
+    """The single canonical TODOS.md for a project."""
+    return project_dir(slug) / "TODOS.md"
 
 
 def ensure_project_dir(slug: str) -> None:
     d = project_dir(slug)
     d.mkdir(parents=True, exist_ok=True)
-    for state in ("INBOX", "TODOS"):
-        p = state_path(slug, state)
-        if not p.exists():
-            p.write_text(_blank_file(slug, state), encoding="utf-8")
+    p = todos_path(slug)
+    if not p.exists():
+        p.write_text(_blank_file(slug), encoding="utf-8")
 
 
-def _blank_file(slug: str, state: str) -> str:
+def _blank_file(slug: str) -> str:
     return (
-        f"---\nschema: {SCHEMA}\nproject: {slug}\nfile: {state}\n---\n\n"
-        f"# {state} — {slug}\n"
+        f"---\nschema: {SCHEMA}\nproject: {slug}\n---\n\n"
+        f"# TODOS — {slug}\n\n"
+        f"Single canonical list. Lifecycle is encoded in each entry's `status:` field:\n"
+        f"`pending` (agent proposed) → `open` → `in-progress` → `done`. "
+        f"Side path: `wont` (tombstone for declined work).\n"
     )
 
 
@@ -385,6 +401,8 @@ def cmd_init(args) -> int:
     readme = ROOT / "README.md"
     if not readme.exists():
         readme.write_text(_root_readme(), encoding="utf-8")
+    snap_dir = ROOT / "snapshots"
+    snap_dir.mkdir(exist_ok=True)
     if _git_available() and not (ROOT / ".git").exists():
         try:
             subprocess.run(["git", "-C", str(ROOT), "init", "-q"], check=True)
@@ -397,9 +415,8 @@ def cmd_init(args) -> int:
     print()
     print("Next steps:")
     print(f"  1. Register a project:   todos add /path/to/your/repo")
-    print(f"  2. Paste the snippet at  https://github.com/zzbyy/clawtodos#agent-instructions")
-    print(f"     into your CLAUDE.md / AGENTS.md / .cursorrules.")
-    print(f"  3. Use your AI normally. Review the inbox once a day:  todos list --state inbox")
+    print(f"  2. Wire your AI agents:  see https://github.com/zzbyy/clawtodos#wire-up-agents")
+    print(f"  3. Use your AI normally; review with `todos list` (or just say 'what's on the list?').")
     return 0
 
 
@@ -409,12 +426,10 @@ def _root_readme() -> str:
         "Central home for [clawtodos](https://github.com/zzbyy/clawtodos) — "
         "agent-native task manager.\n\n"
         "- `registry.yaml` — registered projects and personal programs\n"
-        "- `<slug>/INBOX.md` — proposed todos (agents append here)\n"
-        "- `<slug>/TODOS.md` — approved canonical todos\n"
-        "- `<slug>/DONE.md` — archived completions\n"
-        "- `<slug>/REJECTED.md` — rejected proposals (audit trail)\n"
-        "- `INDEX.md` — generated cross-project rollup\n\n"
-        "This directory is itself a git repo. Every approve/reject/defer commits.\n"
+        "- `<slug>/TODOS.md` — per-project task list (one file, lifecycle in `status:` field)\n"
+        "- `INDEX.md` — generated cross-project rollup\n"
+        "- `snapshots/YYYY-Wxx.json` — weekly snapshots for diff-based weekly reviews\n\n"
+        "This directory is itself a git repo. Every meaningful action commits.\n"
     )
 
 
@@ -455,120 +470,165 @@ def cmd_add(args) -> int:
     return 0
 
 
+def cmd_new(args) -> int:
+    """Add a new todo with status=open (the explicit-approval path)."""
+    return _append_todo(args, default_status="open")
+
+
+def cmd_propose(args) -> int:
+    """Add a new todo with status=pending (the autonomous-agent path)."""
+    return _append_todo(args, default_status="pending")
+
+
+def _append_todo(args, default_status: str) -> int:
+    reg = load_registry()
+    if not find_project(reg, args.slug):
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
+        return 1
+    ensure_project_dir(args.slug)
+    p = todos_path(args.slug)
+    tf = parse_todo_file(p)
+
+    today = dt.date.today().isoformat()
+    fields = {
+        "status": default_status,
+        "priority": (args.priority or "P2").upper(),
+        "created": today,
+    }
+    if args.effort:
+        fields["effort"] = args.effort.upper()
+    if args.agent:
+        fields["agent"] = args.agent
+    if args.tags:
+        fields["tags"] = args.tags
+
+    new = Todo(title=args.title, fields=fields, body=(args.body or ""))
+    if any(t.slug == new.slug and t.status not in ("done", "wont") for t in tf.todos):
+        print(f"warning: a todo with id '{new.slug}' already exists in {args.slug}",
+              file=sys.stderr)
+    tf.todos.append(new)
+    tf.write()
+
+    git_commit(f"{default_status}: {args.slug}/{new.slug}", [p])
+    print(f"added: {args.slug}/{new.slug} (status={default_status})")
+    return 0
+
+
 def cmd_list(args) -> int:
     reg = load_registry()
     slugs = [args.slug] if args.slug else [p["slug"] for p in reg.get("projects", [])]
-    states = [args.state.upper()] if args.state and args.state != "all" else ["INBOX", "TODOS"]
-    if args.state == "all":
-        states = list(STATES)
 
+    state_filter = (args.state or "active").lower()
+    if state_filter == "active":
+        wanted = set(ACTIVE_STATES)
+    elif state_filter == "all":
+        wanted = set(ALL_STATES)
+    else:
+        wanted = {state_filter}
+
+    today = dt.date.today().isoformat()
     any_output = False
     for slug in slugs:
         if not find_project(reg, slug):
             print(f"unknown slug: {slug}", file=sys.stderr)
             continue
-        for state in states:
-            tf = parse_todo_file(state_path(slug, state))
-            if not tf.todos:
+        tf = parse_todo_file(todos_path(slug))
+        rows = []
+        for t in tf.todos:
+            if t.status not in wanted:
                 continue
-            any_output = True
-            print(f"\n=== {slug} / {state} ===")
-            for t in tf.todos:
-                pri = t.fields.get("priority", "")
-                eff = t.fields.get("effort", "")
-                agent = t.fields.get("agent", "")
-                meta = " ".join(filter(None, [pri, eff, f"@{agent}" if agent else ""]))
-                print(f"  [{t.slug}] {t.title}  {meta}".rstrip())
+            # Hide deferred items that are still in the future
+            deferred = t.fields.get("deferred")
+            if state_filter == "active" and deferred and deferred > today:
+                continue
+            rows.append(t)
+        if not rows:
+            continue
+        any_output = True
+        print(f"\n=== {slug} ({len(rows)}) ===")
+        for t in rows:
+            pri = t.priority
+            eff = t.fields.get("effort", "")
+            agent = t.fields.get("agent", "")
+            stat = t.status
+            stat_tag = f"[{stat}]" if state_filter in ("all", "active") and stat != "open" else ""
+            meta = " ".join(filter(None, [pri, eff, f"@{agent}" if agent else "", stat_tag]))
+            print(f"  [{t.slug}] {t.title}  {meta}".rstrip())
     if not any_output:
         print("(empty)")
     return 0
 
 
-def cmd_move(args) -> int:
-    return _do_move(args.slug, args.id, args.to.upper(),
-                    reason=getattr(args, "reason", None))
+def cmd_set_status(args) -> int:
+    """Generic state-flip primitive."""
+    return _flip_status(args.slug, args.id, args.to.lower(),
+                        reason=getattr(args, "reason", None))
 
 
 def cmd_approve(args) -> int:
-    return _do_move(args.slug, args.id, "TODOS")
+    return _flip_status(args.slug, args.id, "open")
 
 
-def cmd_reject(args) -> int:
-    return _do_move(args.slug, args.id, "REJECTED", reason=args.reason)
+def cmd_start(args) -> int:
+    return _flip_status(args.slug, args.id, "in-progress")
 
 
 def cmd_done(args) -> int:
-    return _do_move(args.slug, args.id, "DONE")
+    return _flip_status(args.slug, args.id, "done")
 
 
-def cmd_defer(args) -> int:
-    src_path = state_path(args.slug, "INBOX")
-    src = parse_todo_file(src_path)
-    todo = next((t for t in src.todos if t.slug == args.id), None)
-    if not todo:
-        print(f"not found: {args.slug}/{args.id} in INBOX", file=sys.stderr)
-        return 1
-    todo.fields["deferred"] = args.until
-    todo.fields["updated"] = dt.date.today().isoformat()
-    src.write()
-    git_commit(f"defer: {args.slug}/{args.id} until {args.until}", [src_path])
-    print(f"deferred: {args.slug}/{args.id} until {args.until}")
-    return 0
+def cmd_drop(args) -> int:
+    return _flip_status(args.slug, args.id, "wont", reason=args.reason)
 
 
-def _do_move(slug: str, todo_id: str, dest_state: str,
-             reason: str | None = None) -> int:
+def _flip_status(slug: str, todo_id: str, target: str, reason: str | None = None) -> int:
     reg = load_registry()
     if not find_project(reg, slug):
         print(f"unknown slug: {slug}", file=sys.stderr)
         return 1
-    if dest_state not in STATES:
-        print(f"bad destination: {dest_state}", file=sys.stderr)
+    if target not in ALL_STATES:
+        print(f"bad status: {target}. Must be one of {ALL_STATES}", file=sys.stderr)
         return 1
 
-    src_state = None
-    src_tf: TodoFile | None = None
-    todo: Todo | None = None
-    for s in STATES:
-        tf = parse_todo_file(state_path(slug, s))
-        match = next((t for t in tf.todos if t.slug == todo_id), None)
-        if match:
-            src_state, src_tf, todo = s, tf, match
-            break
-    if not todo or src_tf is None or src_state is None:
+    p = todos_path(slug)
+    tf = parse_todo_file(p)
+    todo = next((t for t in tf.todos if t.slug == todo_id), None)
+    if not todo:
         print(f"not found: {slug}/{todo_id}", file=sys.stderr)
         return 1
-    if src_state == dest_state:
-        print(f"already in {dest_state}: {slug}/{todo_id}")
+
+    prev = todo.status
+    if prev == target:
+        print(f"already {target}: {slug}/{todo_id}")
         return 0
 
     today = dt.date.today().isoformat()
+    todo.fields["status"] = target
     todo.fields["updated"] = today
-    if dest_state == "TODOS":
-        todo.fields.setdefault("status", "open")
+    if target != "pending":
         todo.fields.pop("deferred", None)
-    elif dest_state == "DONE":
-        todo.fields["status"] = "done"
-    elif dest_state == "REJECTED":
-        todo.fields["rejected_at"] = today
-        if reason:
-            todo.fields["rejected_reason"] = reason
-        todo.fields.pop("deferred", None)
+    if target == "wont" and reason:
+        todo.fields["wont_reason"] = reason
 
-    src_tf.todos = [t for t in src_tf.todos if t.slug != todo_id]
-    dest_path = state_path(slug, dest_state)
-    if not dest_path.exists():
-        dest_path.write_text(_blank_file(slug, dest_state), encoding="utf-8")
-    dest_tf = parse_todo_file(dest_path)
-    dest_tf.todos.append(todo)
-    src_tf.write()
-    dest_tf.write()
+    tf.write()
+    suffix = f" ({reason})" if reason else ""
+    git_commit(f"{target}: {slug}/{todo_id}{suffix}", [p])
+    print(f"{slug}/{todo_id}: {prev} -> {target}")
+    return 0
 
-    git_commit(
-        f"{dest_state.lower()}: {slug}/{todo_id}" + (f" ({reason})" if reason else ""),
-        [src_tf.path, dest_tf.path],
-    )
-    print(f"moved {slug}/{todo_id}: {src_state} -> {dest_state}")
+
+def cmd_defer(args) -> int:
+    p = todos_path(args.slug)
+    tf = parse_todo_file(p)
+    todo = next((t for t in tf.todos if t.slug == args.id), None)
+    if not todo:
+        print(f"not found: {args.slug}/{args.id}", file=sys.stderr)
+        return 1
+    todo.fields["deferred"] = args.until
+    todo.fields["updated"] = dt.date.today().isoformat()
+    tf.write()
+    git_commit(f"defer: {args.slug}/{args.id} until {args.until}", [p])
+    print(f"deferred: {args.slug}/{args.id} until {args.until}")
     return 0
 
 
@@ -587,14 +647,21 @@ def cmd_ingest(args) -> int:
 
 
 def do_ingest(slug: str, source: Path) -> None:
+    """Scan source repo for existing todos. Append as `status: pending` so the
+    user can review and approve."""
     found: list[Todo] = []
+
+    # 1) v1 in-repo TODOS.md
     v1 = source / "TODOS.md"
     if v1.exists():
         tf = parse_todo_file(v1)
         for t in tf.todos:
             t.fields.setdefault("agent", "ingest")
+            t.fields["status"] = "pending"
             found.append(t)
-    for sub, status in (("pending", "open"), ("done", "done"), ("closed", "wont")):
+
+    # 2) .planning/todos/{pending,done,closed}/*.md (gsd-style)
+    for sub, status in (("pending", "pending"), ("done", "done"), ("closed", "wont")):
         d = source / ".planning" / "todos" / sub
         if d.exists():
             for f in sorted(d.glob("*.md")):
@@ -606,50 +673,177 @@ def do_ingest(slug: str, source: Path) -> None:
                 t.body = body_text
                 found.append(t)
 
-    out = project_dir(slug) / "ingested.md"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    body = [
-        "---",
-        f"schema: {SCHEMA}",
-        f"project: {slug}",
-        "file: ingested",
-        "---",
-        "",
-        f"# INGESTED — {slug}",
-        "",
-        f"Read-only mirror of todos discovered in {source}.",
-        f"Generated: {dt.datetime.now().isoformat(timespec='seconds')}",
-        "",
-    ]
+    if not found:
+        print(f"ingested 0 entries from {source}")
+        return
+
+    # Append into the project's TODOS.md (don't overwrite existing entries by id)
+    p = todos_path(slug)
+    project_dir(slug).mkdir(parents=True, exist_ok=True)
+    if not p.exists():
+        p.write_text(_blank_file(slug), encoding="utf-8")
+    tf = parse_todo_file(p)
+    existing_slugs = {t.slug for t in tf.todos}
+    new_count = 0
     for t in found:
-        body.append(t.to_md())
-    out.write_text("\n".join(body).rstrip() + "\n", encoding="utf-8")
-    print(f"ingested {len(found)} entries from {source} -> {out}")
+        if t.slug in existing_slugs:
+            continue
+        tf.todos.append(t)
+        new_count += 1
+    tf.write()
+    git_commit(f"ingest: {slug} ({new_count} new from {source.name})", [p])
+    print(f"ingested {new_count} new entries from {source} -> {p}")
+
+
+def _all_todos() -> list[tuple[str, Todo]]:
+    """Return (slug, Todo) pairs across every registered project."""
+    reg = load_registry()
+    out = []
+    for proj in reg.get("projects", []):
+        slug = proj["slug"]
+        tf = parse_todo_file(todos_path(slug))
+        for t in tf.todos:
+            out.append((slug, t))
+    return out
 
 
 def cmd_index(_args) -> int:
+    today = dt.date.today()
+    today_iso = today.isoformat()
+    week_ago = (today - dt.timedelta(days=7)).isoformat()
+
+    todos = _all_todos()
+    visible_pending = [(s, t) for s, t in todos
+                       if t.status == "pending"
+                       and (not t.fields.get("deferred") or t.fields["deferred"] <= today_iso)]
+    active = [(s, t) for s, t in todos if t.status in ACTIVE_STATES
+              and (not t.fields.get("deferred") or t.fields["deferred"] <= today_iso)]
+    in_prog = [(s, t) for s, t in todos if t.status == "in-progress"]
+    open_ = [(s, t) for s, t in todos if t.status == "open"]
+    done_recent = [(s, t) for s, t in todos
+                   if t.status == "done"
+                   and t.fields.get("updated", "") >= week_ago]
+    stale = [(s, t) for s, t in todos
+             if t.status in ACTIVE_STATES
+             and (t.fields.get("updated") or t.fields.get("created", "9999")) <
+             (today - dt.timedelta(days=30)).isoformat()]
+
+    p_counts = {p: sum(1 for _, t in active if t.priority == p) for p in ("P0", "P1", "P2", "P3")}
+    by_proj_active: dict[str, list[Todo]] = {}
+    for s, t in active:
+        by_proj_active.setdefault(s, []).append(t)
+
+    lines = [
+        "# clawtodos — INDEX",
+        "",
+        f"_generated {dt.datetime.now().isoformat(timespec='seconds')}_",
+        "",
+        f"📋 **{len(active)} active** ({len(in_prog)} in-progress, {len(open_)} open) "
+        f"· **{len(visible_pending)} pending review** "
+        f"· **{len(done_recent)} done this week** "
+        f"· **{len(stale)} stale (>30d)**",
+        "",
+        f"**By priority (active):**  P0={p_counts['P0']} · P1={p_counts['P1']} · "
+        f"P2={p_counts['P2']} · P3={p_counts['P3']}",
+        "",
+    ]
+
+    # Pending review block
+    if visible_pending:
+        lines.append(f"## 🟡 Pending review ({len(visible_pending)})")
+        lines.append("")
+        for s, t in sorted(visible_pending, key=lambda x: (x[1].priority, x[0], x[1].title)):
+            agent = f" @{t.fields.get('agent', '?')}"
+            lines.append(f"- **[{t.priority}]** `{s}` — {t.title}{agent}")
+        lines.append("")
+
+    # Top of mind: P0 / P1 active
+    hot = [(s, t) for s, t in active if t.priority in ("P0", "P1")]
+    if hot:
+        lines.append(f"## 🔥 Top of mind ({len(hot)} P0/P1)")
+        lines.append("")
+        for s, t in sorted(hot, key=lambda x: (x[1].priority, x[0])):
+            lines.append(f"- **[{t.priority}]** `{s}` — {t.title}")
+        lines.append("")
+
+    # By project
+    lines.append("## By project")
+    lines.append("")
     reg = load_registry()
-    rows: list[tuple[str, str, str, str, str]] = []
     for proj in reg.get("projects", []):
         slug = proj["slug"]
-        for state in ("INBOX", "TODOS"):
-            tf = parse_todo_file(state_path(slug, state))
-            for t in tf.todos:
-                rows.append((
-                    slug, state, t.fields.get("priority", "P2"),
-                    t.fields.get("agent", ""), t.title,
-                ))
+        recs = by_proj_active.get(slug, [])
+        all_for_proj = [t for s, t in todos if s == slug]
+        if not all_for_proj:
+            lines.append(f"### `{slug}` — _no todos yet_")
+            lines.append("")
+            continue
+        ip = sum(1 for t in all_for_proj if t.status == "in-progress")
+        op = sum(1 for t in all_for_proj if t.status == "open")
+        dn = sum(1 for t in all_for_proj if t.status == "done")
+        wn = sum(1 for t in all_for_proj if t.status == "wont")
+        lines.append(f"### `{slug}` — {op} open · {ip} in-progress · {dn} done · {wn} wont")
+        lines.append("")
+        if not recs:
+            continue
+        for t in sorted(recs, key=lambda x: (x.priority, x.title)):
+            eff = t.fields.get("effort", "")
+            tag = f"[{t.status}]" if t.status != "open" else ""
+            lines.append(f"- **[{t.priority}{(' · ' + eff) if eff else ''}]** {t.title} {tag}".rstrip())
+        lines.append("")
 
-    rows.sort(key=lambda r: (r[1], r[2], r[0], r[4]))
-    out = ["# INDEX", "", f"Generated: {dt.datetime.now().isoformat(timespec='seconds')}", ""]
-    out.append("| State | Priority | Project | Agent | Title |")
-    out.append("|---|---|---|---|---|")
-    for slug, state, pri, agent, title in rows:
-        out.append(f"| {state} | {pri} | {slug} | {agent} | {title} |")
-    if not rows:
-        out.append("| _no entries yet_ | | | | |")
-    (ROOT / "INDEX.md").write_text("\n".join(out) + "\n", encoding="utf-8")
-    print(f"wrote {ROOT / 'INDEX.md'} ({len(rows)} entries)")
+    # Stale spotlight
+    if stale:
+        lines.append(f"## ⏳ Stale (>30 days, top {min(5, len(stale))})")
+        lines.append("")
+        for s, t in sorted(stale,
+                           key=lambda x: x[1].fields.get("updated") or x[1].fields.get("created", ""))[:5]:
+            updated = t.fields.get("updated") or t.fields.get("created", "?")
+            lines.append(f"- `{s}` — {t.title} _(last touched {updated})_")
+        lines.append("")
+
+    (ROOT / "INDEX.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    print(f"wrote {ROOT / 'INDEX.md'}")
+    return 0
+
+
+def cmd_snapshot(_args) -> int:
+    """Write a weekly snapshot to ~/.todos/snapshots/YYYY-Wxx.json."""
+    snap_dir = ROOT / "snapshots"
+    snap_dir.mkdir(exist_ok=True)
+    today = dt.date.today()
+    iso_year, iso_week, _ = today.isocalendar()
+    snap_path = snap_dir / f"{iso_year}-W{iso_week:02d}.json"
+
+    todos = _all_todos()
+    payload = {
+        "schema": SCHEMA,
+        "snapshot_date": today.isoformat(),
+        "iso_week": f"{iso_year}-W{iso_week:02d}",
+        "counts": {
+            "total": len(todos),
+            **{state: sum(1 for _, t in todos if t.status == state) for state in ALL_STATES},
+        },
+        "todos": [
+            {
+                "id": f"{slug}/{t.slug}",
+                "project": slug,
+                "title": t.title,
+                "status": t.status,
+                "priority": t.priority,
+                "effort": t.fields.get("effort"),
+                "agent": t.fields.get("agent"),
+                "created": t.fields.get("created"),
+                "updated": t.fields.get("updated"),
+                "deferred": t.fields.get("deferred"),
+                "tags": [x.strip() for x in t.fields.get("tags", "").split(",") if x.strip()],
+            }
+            for slug, t in todos
+        ],
+    }
+    snap_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    git_commit(f"snapshot: {iso_year}-W{iso_week:02d}", [snap_path])
+    print(f"wrote snapshot: {snap_path} ({payload['counts']['total']} todos)")
     return 0
 
 
@@ -664,19 +858,18 @@ def cmd_doctor(_args) -> int:
         problems += 1
     for proj in reg.get("projects", []):
         slug = proj["slug"]
-        for s in ("INBOX", "TODOS"):
-            p = state_path(slug, s)
-            if not p.exists():
-                print(f"warn: missing {p}")
-                problems += 1
+        p = todos_path(slug)
+        if not p.exists():
+            print(f"warn: missing {p}")
+            problems += 1
         path_str = proj.get("path")
         if path_str:
             in_repo = Path(os.path.expanduser(path_str)) / "TODOS.md"
             if in_repo.exists():
                 print(f"info: {slug} has a v1-style in-repo TODOS.md at {in_repo}")
-                print(f"      consider: todos ingest {slug} (one-shot import as proposals)")
+                print(f"      consider: todos ingest {slug} (one-shot import as pending)")
     if problems == 0:
-        print(f"ok: root={ROOT}, projects={len(reg.get('projects', []))}")
+        print(f"ok: root={ROOT}, projects={len(reg.get('projects', []))}, schema={SCHEMA}")
     return 0 if problems == 0 else 2
 
 
@@ -685,8 +878,10 @@ def cmd_doctor(_args) -> int:
 # --------------------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="todos",
-                                description="clawtodos / todo-contract/v2 reference CLI")
+    p = argparse.ArgumentParser(
+        prog="todos",
+        description="clawtodos / todo-contract/v3 reference CLI",
+    )
     p.add_argument("--root", help="override TODO_CONTRACT_ROOT (default ~/.todos)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -701,42 +896,73 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--no-ingest", dest="ingest", action="store_false")
     a.set_defaults(func=cmd_add)
 
-    a = sub.add_parser("list", help="list todos")
+    a = sub.add_parser("new", help="create a new todo (status: open — explicit-approval path)")
+    a.add_argument("slug")
+    a.add_argument("title")
+    a.add_argument("--priority", default="P2")
+    a.add_argument("--effort")
+    a.add_argument("--agent", help="who's proposing it (default: not set)")
+    a.add_argument("--tags", help="comma-separated tags")
+    a.add_argument("--body", help="optional free-form body text")
+    a.set_defaults(func=cmd_new)
+
+    a = sub.add_parser("propose", help="propose a todo (status: pending — autonomous-agent path)")
+    a.add_argument("slug")
+    a.add_argument("title")
+    a.add_argument("--priority", default="P2")
+    a.add_argument("--effort")
+    a.add_argument("--agent", help="who's proposing it")
+    a.add_argument("--tags")
+    a.add_argument("--body")
+    a.set_defaults(func=cmd_propose)
+
+    a = sub.add_parser("list", help="list todos (default: only active)")
     a.add_argument("--slug")
-    a.add_argument("--state", choices=("inbox", "todos", "done", "rejected", "all"))
+    a.add_argument(
+        "--state",
+        choices=("active", "pending", "open", "in-progress", "done", "wont", "all"),
+        help="default: active (open + in-progress)",
+    )
     a.set_defaults(func=cmd_list)
 
-    a = sub.add_parser("move", help="move a todo between INBOX/TODOS/DONE/REJECTED")
-    a.add_argument("slug")
-    a.add_argument("id")
-    a.add_argument("--to", required=True, choices=("inbox", "todos", "done", "rejected"))
-    a.add_argument("--reason", help="reason (used for rejection)")
-    a.set_defaults(func=cmd_move)
-
-    a = sub.add_parser("approve", help="promote INBOX entry to TODOS")
+    a = sub.add_parser("approve", help="pending → open")
     a.add_argument("slug"); a.add_argument("id")
     a.set_defaults(func=cmd_approve)
 
-    a = sub.add_parser("reject", help="reject an INBOX entry")
+    a = sub.add_parser("start", help="open → in-progress")
     a.add_argument("slug"); a.add_argument("id")
-    a.add_argument("--reason")
-    a.set_defaults(func=cmd_reject)
+    a.set_defaults(func=cmd_start)
 
-    a = sub.add_parser("done", help="mark a TODOS entry done (move to DONE)")
+    a = sub.add_parser("done", help="any → done")
     a.add_argument("slug"); a.add_argument("id")
     a.set_defaults(func=cmd_done)
 
-    a = sub.add_parser("defer", help="keep entry in INBOX with deferred:<date>")
+    a = sub.add_parser("drop", help="any → wont (tombstone)")
+    a.add_argument("slug"); a.add_argument("id")
+    a.add_argument("--reason")
+    a.set_defaults(func=cmd_drop)
+
+    a = sub.add_parser("set-status", help="generic state-flip primitive")
+    a.add_argument("slug"); a.add_argument("id")
+    a.add_argument("--to", required=True,
+                   choices=ALL_STATES)
+    a.add_argument("--reason")
+    a.set_defaults(func=cmd_set_status)
+
+    a = sub.add_parser("defer", help="add deferred:<date> field; hide from active list until then")
     a.add_argument("slug"); a.add_argument("id")
     a.add_argument("--until", required=True, help="YYYY-MM-DD")
     a.set_defaults(func=cmd_defer)
 
-    a = sub.add_parser("ingest", help="scan registered project's source for existing todos")
+    a = sub.add_parser("ingest", help="scan a registered project's source for existing todos")
     a.add_argument("slug")
     a.set_defaults(func=cmd_ingest)
 
-    a = sub.add_parser("index", help="generate $TODO_CONTRACT_ROOT/INDEX.md")
+    a = sub.add_parser("index", help="regenerate ~/.todos/INDEX.md")
     a.set_defaults(func=cmd_index)
+
+    a = sub.add_parser("snapshot", help="write weekly snapshot to ~/.todos/snapshots/YYYY-Wxx.json")
+    a.set_defaults(func=cmd_snapshot)
 
     a = sub.add_parser("doctor", help="sanity check the central tree")
     a.set_defaults(func=cmd_doctor)

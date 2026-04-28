@@ -2,6 +2,50 @@
 
 All notable changes to `clawtodos` will be documented in this file. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
 
+## [3.0.0] — 2026-04-28
+
+Schema redesign. Major rewrite of the file model and conversational vocabulary based on feedback that the v2 4-file split (`INBOX.md` / `TODOS.md` / `DONE.md` / `REJECTED.md`) was overengineered, and that `INBOX` collided with email semantics for users with Gmail-integrated agents.
+
+### Changed (BREAKING)
+
+- **Schema string:** `todo-contract/v2` → `todo-contract/v3`.
+- **One file per project.** All entries for a project live in `~/.todos/<slug>/TODOS.md`. No more `INBOX.md`, `DONE.md`, `REJECTED.md`.
+- **Lifecycle is now a `status:` field**, not a file location:
+  - `pending` — agent proposed autonomously, awaits user confirmation
+  - `open` — confirmed work, on the list, not started
+  - `in-progress` — actively being worked
+  - `done` — shipped (stays in TODOS.md)
+  - `wont` — declined / out of scope (kept as a tombstone so agents don't re-propose)
+- **Agents writing on the explicit-approval path use `status: open` directly.** When the user says *"add this"*, they already approved by speaking. The `pending` state exists for the rare autonomous case.
+- **Rejection is now `status: wont` with optional `wont_reason`,** not a separate file. Visible to agents so they don't re-propose. Git history captures the transition.
+- **CLI verbs renamed and added:**
+  - new: `todos new <slug> "<title>"` — adds an open todo (interactive path)
+  - new: `todos propose <slug> "<title>"` — adds a pending todo (autonomous path)
+  - new: `todos start <slug> <id>` — open → in-progress
+  - new: `todos drop <slug> <id> [--reason]` — replaces `todos reject`; flips to wont
+  - new: `todos snapshot` — write weekly snapshot for diff-based reviews
+  - removed: `todos move`, `todos reject`
+  - `todos approve` now flips pending → open (was: move INBOX → TODOS)
+  - `todos done` now flips status → done (was: move TODOS → DONE)
+
+### Added
+
+- **Conversational vocabulary as part of the spec (SPEC.md §6).** 11 phrase patterns mapped to deterministic agent actions. Any clawtodos-conformant agent recognizes these phrases. Examples:
+  - *"what's on the list"* / *"what are the todos"* → show open + in-progress
+  - *"what's outstanding across everything"* → cross-project rollup
+  - *"anything new"* / *"what did the agents propose"* → show pending
+  - *"what should I tackle in 2 hours"* → smart prioritization by priority + effort + freshness
+  - *"weekly review"* → diff vs last week's snapshot
+- **Cross-project `INDEX.md`** with morning-briefing format: counts by priority, top P0/P1, stale items (>30d), done this week, pending review, by-project breakdown.
+- **Weekly snapshots** at `~/.todos/snapshots/YYYY-Wxx.json` for shipped/created/net-delta computation.
+- **OpenClaw skill renamed and expanded** from `clawtodos-review` to just `clawtodos`. Now ~400 lines covering all 11 conversational patterns, smart prioritization, heartbeat alerts (P0/P1, stale spotlight), and weekly review template.
+
+### Migration from v2
+
+If you ran v2 (briefly): `~/.todos/<slug>/INBOX.md` entries should be appended to `<slug>/TODOS.md` with `status: pending`. `DONE.md` entries become `<slug>/TODOS.md` entries with `status: done`. `REJECTED.md` entries become `status: wont` with `wont_reason` set. A migration helper isn't included because v2 had a tiny user base; manual `cat` + edit is faster.
+
+If you ran v1 (per-repo `TODOS.md`): no breaking change for v1 itself — `todo-contract/v1` repos keep working untouched. `todos add /path --ingest` reads v1 in-repo files and writes them to your central TODOS.md as `status: pending`.
+
 ## [2.2.0] — 2026-04-27
 
 ### Removed

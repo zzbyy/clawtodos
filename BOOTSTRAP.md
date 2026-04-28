@@ -8,9 +8,9 @@ If you cannot run shell commands, edit files outside the current repo, or read U
 
 ## What clawtodos is (so you set expectations correctly)
 
-A central, agent-proposes / human-approves task system. Canonical state lives at `~/.todos/` (or `$TODO_CONTRACT_ROOT`). Multiple AI agents drop proposed todos into per-project `INBOX.md` files; the human approves into `TODOS.md`. Repos are read-only sources. The full spec is at <https://github.com/zzbyy/clawtodos/blob/main/SPEC.md>.
+A central task system that any AI agent can read and write. Canonical state lives at `~/.todos/` (or `$TODO_CONTRACT_ROOT`). One file per project: `~/.todos/<slug>/TODOS.md`. The lifecycle of every entry is encoded in a `status:` field — `pending` / `open` / `in-progress` / `done` / `wont`. No INBOX/DONE/REJECTED file split. Repos are read-only sources. The full spec is at <https://github.com/zzbyy/clawtodos/blob/main/SPEC.md>.
 
-You will be installing both the `todos` CLI and the per-agent instruction snippet.
+You will be installing the `todos` CLI, the per-agent instruction snippet, and (for OpenClaw users) the `clawtodos` skill that handles conversational add/review/weekly review.
 
 ---
 
@@ -96,7 +96,7 @@ Also look at the standard global instruction files:
 - Codex CLI: `~/.codex/AGENTS.md`
 - OpenClaw: `~/.openclaw/workspace/AGENTS.md`
 
-Read each one (silently). For each, note whether it already contains `<!-- BEGIN: clawtodos / todo-contract/v2 -->` (already wired) or `<!-- BEGIN: todo-contract/v1 -->` (legacy v1 — needs upgrade).
+Read each one (silently). For each, note whether it already contains `<!-- BEGIN: clawtodos / todo-contract/v3 -->` (already wired) or `<!-- BEGIN: todo-contract/v1 -->` (legacy v1 — needs upgrade).
 
 Then ask the human:
 
@@ -118,8 +118,8 @@ curl -fsSL https://raw.githubusercontent.com/zzbyy/clawtodos/main/snippets/AGENT
 
 For each chosen agent's instruction file:
 
-1. **If the file already contains `<!-- BEGIN: clawtodos / todo-contract/v2 -->`:** skip; already wired. Move on.
-2. **If the file contains `<!-- BEGIN: todo-contract/v1 -->`:** the human is migrating from v1. Tell them: *"Your `<file>` has the v1 todo-contract snippet. clawtodos v2 supersedes it. I'll replace the v1 block with the v2 block. OK?"* On yes, delete from the v1 BEGIN to v1 END line and append the v2 snippet to the end.
+1. **If the file already contains `<!-- BEGIN: clawtodos / todo-contract/v3 -->`:** skip; already wired. Move on.
+2. **If the file contains `<!-- BEGIN: todo-contract/v1 -->`:** the human is migrating from v1. Tell them: *"Your `<file>` has the v1 todo-contract snippet. clawtodos v3 supersedes it. I'll replace the v1 block with the v3 block. OK?"* On yes, delete from the v1 BEGIN to v1 END line and append the v3 snippet to the end.
 3. **Else:** append the snippet to the end of the file. Preceded by a blank line.
 
 After modifying, show the human a 3-line preview of the change with the file path. Don't dump the whole snippet to chat — they can read the file later.
@@ -130,17 +130,17 @@ Repeat for each chosen agent.
 
 ## Phase 5 — Install the OpenClaw conversational skill (only if applicable)
 
-If the human has OpenClaw (`~/.openclaw/workspace/skills/`), install the `clawtodos-review` skill so they can say *"review my inbox"* in OpenClaw and get a guided walk-through.
+If the human has OpenClaw (`~/.openclaw/workspace/skills/`), install the `clawtodos` skill so they can say *"review my inbox"* in OpenClaw and get a guided walk-through.
 
 ```bash
-SKILL_DIR=~/.openclaw/workspace/skills/clawtodos-review
+SKILL_DIR=~/.openclaw/workspace/skills/clawtodos
 mkdir -p "$SKILL_DIR"
-curl -fsSL https://raw.githubusercontent.com/zzbyy/clawtodos/main/openclaw/clawtodos-review/SKILL.md -o "$SKILL_DIR/SKILL.md"
+curl -fsSL https://raw.githubusercontent.com/zzbyy/clawtodos/main/openclaw/clawtodos/SKILL.md -o "$SKILL_DIR/SKILL.md"
 ```
 
 Tell the human:
 
-> "Installed the `clawtodos-review` skill in OpenClaw. From now on, just say *'review my inbox'* and I'll walk you through pending proposals one at a time."
+> "Installed the `clawtodos` skill in OpenClaw. From now on, just ask things like *'what's on the list'*, *'anything new?'*, *'what should I work on?'*, or *'weekly review'* and I'll handle it."
 
 Skip this phase if OpenClaw is not present.
 
@@ -168,7 +168,7 @@ todos add personal/<name> --type program
 
 Each `todos add` produces a git commit in `~/.todos/`. Show progress to the human:
 
-> "Registered `my-app` (code repo, ingested 3 existing TODO comments → INBOX). Registered `personal/health` (program). Done — 2 projects."
+> "Registered `my-app` (code repo, ingested 3 existing TODO comments as pending). Registered `personal/health` (program). Done — 2 projects."
 
 If `--ingest` was triggered (default for code repos), tell them about the ingested entries — those are now their first batch of proposals to review.
 
@@ -180,7 +180,8 @@ Run the doctor and a quick listing:
 
 ```bash
 todos doctor
-todos list --state inbox
+todos list                # active items only
+   todos list --state pending  # what agents proposed
 ```
 
 If `doctor` returns ok, summarize:
@@ -191,15 +192,16 @@ If `doctor` returns ok, summarize:
 >  • Agents wired: [list]
 >  • OpenClaw skill installed: [yes/no]
 >  • Projects registered: [N]
->  • Pending in inbox: [M]
+>  • Pending review: [M]
 >
 >  Want to review your first inbox now?"
 
-If yes, walk them through it (use the `clawtodos-review` skill if you're OpenClaw, otherwise manually: present each entry with title/priority/agent/body and ask a/e/d/r).
+If yes, walk them through it (use the `clawtodos` skill if you're OpenClaw — it knows the full conversational vocabulary; otherwise present pending entries one at a time with title/priority/agent/body and ask approve/edit/drop/defer).
 
 If no, tell them:
 
-> "Whenever you're ready, say *'review my inbox'* (in OpenClaw) or run `todos list --state inbox` to see what's queued."
+> "Whenever you're ready, say *'review my inbox'* (in OpenClaw) or run `todos list                # active items only
+   todos list --state pending  # what agents proposed` to see what's queued."
 
 ---
 
@@ -207,7 +209,7 @@ If no, tell them:
 
 Final message to the human:
 
-> "All set. Your AI agents will now propose follow-ups into `~/.todos/<project>/INBOX.md` instead of cluttering your repos. Approve them once a day with `todos approve` (or just say 'review my inbox')."
+> "All set. Your AI agents will now propose follow-ups into `~/.todos/<project>/TODOS.md` instead of cluttering your repos. Review with `todos list` (or just say 'what's on the list?')."
 
 Done.
 
