@@ -527,14 +527,22 @@ def cmd_list(args) -> int:
         wanted = {state_filter}
 
     today = dt.date.today().isoformat()
-    any_output = False
+    json_out = getattr(args, "json", False)
+
+    # Collect rows per slug, plus per-slug status counts (used for the
+    # "empty active but pending exists" nudge and for --json output).
+    per_slug_rows: list[tuple[str, list[Todo]]] = []
+    per_slug_counts: dict[str, dict[str, int]] = {}
     for slug in slugs:
         if not find_project(reg, slug):
-            print(f"unknown slug: {slug}", file=sys.stderr)
+            if not json_out:
+                print(f"unknown slug: {slug}", file=sys.stderr)
             continue
         tf = parse_todo_file(todos_path(slug))
-        rows = []
+        counts = {s: 0 for s in ALL_STATES}
+        rows: list[Todo] = []
         for t in tf.todos:
+            counts[t.status] = counts.get(t.status, 0) + 1
             if t.status not in wanted:
                 continue
             # Hide deferred items that are still in the future
@@ -542,8 +550,43 @@ def cmd_list(args) -> int:
             if state_filter == "active" and deferred and deferred > today:
                 continue
             rows.append(t)
-        if not rows:
-            continue
+        per_slug_counts[slug] = counts
+        if rows:
+            per_slug_rows.append((slug, rows))
+
+    # JSON output: structured payload, easy for agents to consume.
+    if json_out:
+        payload = {
+            "schema": SCHEMA,
+            "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+            "state_filter": state_filter,
+            "projects": [],
+        }
+        # Build projects list (include all asked-for slugs, even those with no
+        # rows in the current filter, so callers can see counts).
+        included = {s for s, _ in per_slug_rows}
+        ordered = [s for s, _ in per_slug_rows] + [
+            s for s in per_slug_counts if s not in included
+        ]
+        for slug in ordered:
+            rows = next((r for s, r in per_slug_rows if s == slug), [])
+            payload["projects"].append({
+                "slug": slug,
+                "counts": per_slug_counts.get(slug, {}),
+                "todos": [_todo_to_dict(slug, t) for t in rows],
+            })
+        # Aggregate counts across all projects
+        agg = {s: 0 for s in ALL_STATES}
+        for c in per_slug_counts.values():
+            for s, n in c.items():
+                agg[s] = agg.get(s, 0) + n
+        payload["counts"] = agg
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    # Human output
+    any_output = False
+    for slug, rows in per_slug_rows:
         any_output = True
         print(f"\n=== {slug} ({len(rows)}) ===")
         for t in rows:
@@ -556,7 +599,49 @@ def cmd_list(args) -> int:
             print(f"  [{t.slug}] {t.title}  {meta}".rstrip())
     if not any_output:
         print("(empty)")
+        # Nudge: when the default 'active' filter found nothing, surface other
+        # states that DO have entries — most commonly, pending review proposals
+        # from agents. Avoids the silent-empty-list trap where a user thinks
+        # they have no work but actually has 24 ingested proposals waiting.
+        if state_filter == "active":
+            other_counts = {s: 0 for s in ALL_STATES if s not in wanted}
+            for c in per_slug_counts.values():
+                for s, n in c.items():
+                    if s in other_counts:
+                        other_counts[s] += n
+            hints = []
+            if other_counts.get("pending", 0):
+                hints.append(
+                    f"{other_counts['pending']} pending review — "
+                    f"`todos list --state pending` (or say 'anything new?')"
+                )
+            if other_counts.get("done", 0):
+                hints.append(
+                    f"{other_counts['done']} done — `todos list --state done`"
+                )
+            for hint in hints:
+                print(f"note: {hint}")
     return 0
+
+
+def _todo_to_dict(slug: str, t: Todo) -> dict:
+    """Serialize a Todo for JSON output."""
+    return {
+        "id": f"{slug}/{t.slug}",
+        "slug": t.slug,
+        "project": slug,
+        "title": t.title,
+        "status": t.status,
+        "priority": t.priority,
+        "effort": t.fields.get("effort"),
+        "agent": t.fields.get("agent"),
+        "created": t.fields.get("created"),
+        "updated": t.fields.get("updated"),
+        "deferred": t.fields.get("deferred"),
+        "tags": [s.strip() for s in t.fields.get("tags", "").split(",") if s.strip()],
+        "wont_reason": t.fields.get("wont_reason"),
+        "body": t.body,
+    }
 
 
 def cmd_set_status(args) -> int:
@@ -657,7 +742,13 @@ def do_ingest(slug: str, source: Path) -> None:
         tf = parse_todo_file(v1)
         for t in tf.todos:
             t.fields.setdefault("agent", "ingest")
-            t.fields["status"] = "pending"
+            # Preserve terminal states (done/wont) instead of forcing them
+            # back into the review queue. v1 conventions like `## Done`
+            # group headings or `~~strikethrough~~` titles surface as
+            # status=done at parse time; respect that. Only items that
+            # were genuinely active in the source repo go to pending.
+            if t.status not in ("done", "wont"):
+                t.fields["status"] = "pending"
             found.append(t)
 
     # 2) .planning/todos/{pending,done,closed}/*.md (gsd-style)
@@ -922,6 +1013,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--state",
         choices=("active", "pending", "open", "in-progress", "done", "wont", "all"),
         help="default: active (open + in-progress)",
+    )
+    a.add_argument(
+        "--json",
+        action="store_true",
+        help="emit JSON for agent consumption (includes per-project counts)",
     )
     a.set_defaults(func=cmd_list)
 

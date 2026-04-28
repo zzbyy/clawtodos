@@ -29,7 +29,7 @@ These are spec-level (see SPEC.md §6). Recognize variants of these phrases and 
 | zZ says (or close paraphrase) | You run |
 |---|---|
 | "add a todo to `<slug>`: `<title>`" / "remind me to fix `<X>` in `<slug>`" / "put `<X>` in the project todos" | `todos new <slug> "<title>" --priority <P> --agent openclaw` |
-| "what's on the list" / "what are the todos" / "what's left in `<slug>`" | `todos list` (or `todos list --slug <slug>`) — defaults to active |
+| "what's on the list" / "what are the todos" / "what's left in `<slug>`" | `todos list` (or `todos list --slug <slug>`) — defaults to active. **If the active list is empty, also report pending count** (the CLI emits a `note: N pending review` line on empty-active; relay it). |
 | "what's outstanding across everything" / "what's left across everything" | `todos index && cat ~/.todos/INDEX.md` — then summarize |
 | "anything new" / "what did the agents propose" / "what's pending review" | `todos list --state pending` |
 | "what should I work on" / "what should I tackle in `<duration>`" | Read `~/.todos/INDEX.md` + per-project TODOS.md, filter `status: open`, sort by priority then effort then freshness, recommend matching the time budget |
@@ -49,6 +49,21 @@ When zZ refers to a todo by partial title or feature name (*"the auth fix"*, *"d
 3. If a unique match: use that `<slug>/<id>`.
 4. If multiple matches: ask zZ which one, listing 2-3 candidates with project + title + priority.
 5. If no match: ask which project zZ means; offer to create a new entry instead.
+
+## Empty active list — always check pending
+
+When `todos list` returns `(empty)` and the user asked "what's on the list", they almost always also want to know if there are pending proposals waiting. The CLI now emits a `note:` line in this case (e.g. `note: 24 pending review — ...`). When you see it, surface it in your reply, don't drop it. Example:
+
+> *"Active list is empty — nothing approved yet. You have **24 pending** in the inbox (mostly ingested from existing repo TODOS.md). Say 'review inbox' or 'anything new?' to walk through them."*
+
+If the user wants the structured payload (e.g. for prioritization), use `todos list --json`:
+
+```bash
+todos list --json                 # default state: active
+todos list --state all --json     # everything, machine-readable
+```
+
+JSON output includes per-project status counts and a top-level aggregate — useful for morning-briefing generation without needing `todos index`.
 
 ## The two add paths
 
