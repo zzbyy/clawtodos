@@ -391,6 +391,10 @@ def _todo_to_dict(slug: str, t: Todo) -> dict:
         "priority": t.priority,
         "effort": t.fields.get("effort"),
         "agent": t.fields.get("agent"),
+        # v3.1 coordination fields
+        "claimed_by": t.fields.get("claimed_by"),
+        "lease_until": t.fields.get("lease_until"),
+        "handoff_to": t.fields.get("handoff_to"),
         "created": t.fields.get("created"),
         "updated": t.fields.get("updated"),
         "deferred": t.fields.get("deferred"),
