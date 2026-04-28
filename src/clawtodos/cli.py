@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-todos — reference CLI for clawtodos / todo-contract/v3.
+todos — reference CLI for clawtodos / todo-contract/v3 (and v3.1 extensions).
 
-Single-module, Python stdlib only. Cross-platform (macOS, Linux, Windows).
+Cross-platform (macOS, Linux, Windows). Pure stdlib for the v3 surface;
+v3.1 mutating verbs depend on `filelock` (installed automatically).
 
   todos init                                 # bootstrap ~/.todos/, git init
   todos add <path-or-name> [--type code|program] [--ingest|--no-ingest]
@@ -19,10 +20,19 @@ Single-module, Python stdlib only. Cross-platform (macOS, Linux, Windows).
   todos snapshot                              # write weekly snapshot
   todos doctor
 
+  # v3.1 multi-agent coordination
+  todos claim   <slug> <id> --actor <name> [--lease 3600]    # take a lease
+  todos release <slug> <id> --actor <name>                   # release a lease
+  todos handoff <slug> <id> --actor <name> --to <Y> [--note] # delegate / re-route
+  todos render  <slug>                                       # re-derive TODOS.md from EVENTS.ndjson
+
 The <id> is the slugified title (lowercased, non-alnum -> -) within a project.
 Use `todos list --slug <slug>` to see ids.
 
 Default `todos list` (no --state) shows only "active" entries (open + in-progress).
+
+For the MCP server (Claude Desktop / Cursor / Continue / Zed integration):
+  pip install 'clawtodos[mcp]'   # adds the `clawtodos-mcp` console script
 """
 
 from __future__ import annotations

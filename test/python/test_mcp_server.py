@@ -109,22 +109,21 @@ def call_tool(root: Path, name: str, args: dict) -> dict:
 # Smoke
 # --------------------------------------------------------------------------------------
 
-def test_clawtodos_mcp_help_or_version_doesnt_crash():
-    """Cheapest possible smoke: the binary at least imports without error."""
-    # The MCP server doesn't have --help/--version; just ensure it doesn't fail
-    # to import on this Python. We exec it briefly and kill it.
+def test_clawtodos_mcp_emits_no_stdout_pre_handshake():
+    """Server must not write to stdout before the JSON-RPC handshake (Issue 1
+    stdout-discipline). Pass empty input → server reads EOF immediately and
+    exits without ever sending a protocol message."""
     proc = subprocess.Popen(
         [CLAWTODOS_MCP_BIN],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
-    proc.stdin.close()
     try:
-        out, err = proc.communicate(timeout=5)
+        # input=b"" sends EOF to the server's stdin without us calling .close()
+        # (which is incompatible with .communicate() on Python 3.11+).
+        out, err = proc.communicate(input=b"", timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
         out, err = proc.communicate()
-    # Should NOT have written anything to stdout before EOF
-    # (per Issue 1 stdout-discipline).
     assert out == b"", f"server wrote to stdout pre-handshake: {out!r}"
 
 
