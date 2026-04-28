@@ -2,10 +2,38 @@
 
 All notable changes to `clawtodos` will be documented in this file. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [Unreleased] — v3.1.0 (Compliance Kit)
+
+> **Multi-agent coordination + MCP server.** Agents on the same machine now coordinate via lease-based claims. Stdio MCP server lets any MCP-aware agent (Claude Desktop, Cursor, Continue, Zed) speak the protocol natively.
+
+### Added
+
+- **`clawtodos.events` module — append-only EVENTS.ndjson + the mutation pipeline.** Every project gets a per-project event log alongside `TODOS.md`. The log is the source of truth; `TODOS.md` is a deterministic render. Pipeline: lock → check render hash (with crash recovery) → append → re-render → record render hash → git commit → release. Locking via `filelock` (cross-platform). See [SPEC-v3.1.md §4, §6](SPEC-v3.1.md).
+- **`todos claim <slug> <id> --actor <name> [--lease N]`.** Claim a task with a time-bounded lease (default 1h, max 24h). Succeeds if unclaimed, expired, or you ARE the holder (self-refresh). Errors `already_claimed` if another actor holds.
+- **`todos release <slug> <id> --actor <name>`.** Holder-only.
+- **`todos handoff <slug> <id> --actor <name> --to <Y> [--note ...]`.** Hand off a task. Per the v3.1 amendment: succeeds on unclaimed (delegation flow) OR when actor IS the current holder. Errors `task_held_by_other_actor` when a different actor holds.
+- **`todos render <slug>`.** Re-derive `TODOS.md` from the event log, discarding any hand-edits.
+- **`clawtodos-mcp` — stdio MCP server.** Install with `pip install 'clawtodos[mcp]'` (Python 3.10+). Wire to Claude Desktop:
+  ```json
+  { "mcpServers": { "clawtodos": { "command": "clawtodos-mcp" } } }
+  ```
+  Tools: `projects.list`, `tasks.{list,create,claim,release,handoff,start,done,drop}`. Errors carry stable code strings (`unknown_id`, `already_claimed`, `task_held_by_other_actor`, etc.).
+- **`SPEC-v3.1.md`.** Specification (additive over v3.0). New fields, EVENTS.ndjson format, schema evolution rules, mutation pipeline, bootstrap migration, claim/release/handoff semantics, MCP server tool list with error codes, stdio safety rule.
+- **Cross-platform pytest conformance suite.** `test/python/` — 72 scenarios across 4 files: `test_cli_lifecycle.py` (regression net), `test_events.py` (events module), `test_cli_v31.py` (claim/handoff CLI), `test_mcp_server.py` (live MCP server end-to-end on Python 3.10+).
+- **GitHub Actions:** `conformance.yml` runs the pytest suite on Python 3.9–3.13 across Linux + macOS. `release.yml` publishes to PyPI on tag push (uses OIDC trusted publishing).
+
+### Changed
+
+- **`pending` is now an optional soft-norm, not a required approval gate.** Agents MAY use it when uncertain; agents MAY skip it and write directly to `open` or `in-progress` when context is clear. Conversational vocabulary ("approve X") still resolves to `pending → open`. **This is a behavioral change.** See [SPEC-v3.1.md §5](SPEC-v3.1.md).
+- **`Todo.to_md()` canonical field order extended** to include `claimed_by`, `lease_until`, `handoff_to` in their semantic positions (after `agent`, before `created`).
+- **All mutating CLI verbs route through `events.mutate`.** CLI surface, output, and exit codes unchanged; underlying machinery is the new event log. Auto-bootstrap runs on first mutation for slugs with v3.0 `TODOS.md` but no `EVENTS.ndjson`.
+- **Bootstrap migration auto-disambiguates duplicate slugs.** Two existing todos with the same canonical slug get renamed to `<base>-2`, `<base>-3`, etc. on first v3.1 write, with the rename logged to stderr. Prevents data loss for v3.0 stores that allowed duplicate-titled todos.
+- **Refactored `cli.py` (1083 → 509 lines).** Pulled parser, dataclasses, registry I/O into new `clawtodos.core` module. Replaced module-global `ROOT` with explicit `Context(root: Path)` dataclass.
+- **`git_commit` retries 3× with 100ms backoff** on `.git/index.lock: File exists` errors, addressing contention with the user's IDE or other git tools.
 
 ### Fixed
 
+- **Hand-rolled YAML parser now handles inline `[]`/`{}` and both list-item indent forms.** Previously returned an empty projects list when PyYAML wasn't installed (e.g., on Python 3.13).
 - **`todos ingest` no longer overwrites `done`/`wont` items.** Previously, ingesting a v1 in-repo `TODOS.md` forced **every** parsed entry to `status: pending`, including items that the v1 source already marked done (via `## Done` group heading) or killed (via `~~strikethrough~~` titles). The user then had to wade through completed work in the review queue. Ingest now preserves terminal states (`done`, `wont`); only genuinely active source entries become `pending`.
 
 ### Changed

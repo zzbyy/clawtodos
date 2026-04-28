@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-todos — reference CLI for clawtodos / todo-contract/v3.
+todos — reference CLI for clawtodos / todo-contract/v3 (and v3.1 extensions).
 
-Single-module, Python stdlib only. Cross-platform (macOS, Linux, Windows).
+Cross-platform (macOS, Linux, Windows). Pure stdlib for the v3 surface;
+v3.1 mutating verbs depend on `filelock` (installed automatically).
 
   todos init                                 # bootstrap ~/.todos/, git init
   todos add <path-or-name> [--type code|program] [--ingest|--no-ingest]
@@ -19,10 +20,19 @@ Single-module, Python stdlib only. Cross-platform (macOS, Linux, Windows).
   todos snapshot                              # write weekly snapshot
   todos doctor
 
+  # v3.1 multi-agent coordination
+  todos claim   <slug> <id> --actor <name> [--lease 3600]    # take a lease
+  todos release <slug> <id> --actor <name>                   # release a lease
+  todos handoff <slug> <id> --actor <name> --to <Y> [--note] # delegate / re-route
+  todos render  <slug>                                       # re-derive TODOS.md from EVENTS.ndjson
+
 The <id> is the slugified title (lowercased, non-alnum -> -) within a project.
 Use `todos list --slug <slug>` to see ids.
 
 Default `todos list` (no --state) shows only "active" entries (open + in-progress).
+
+For the MCP server (Claude Desktop / Cursor / Continue / Zed integration):
+  pip install 'clawtodos[mcp]'   # adds the `clawtodos-mcp` console script
 """
 
 from __future__ import annotations
@@ -31,356 +41,64 @@ import argparse
 import datetime as dt
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-# --------------------------------------------------------------------------------------
-# Config
-# --------------------------------------------------------------------------------------
-
-SCHEMA = "todo-contract/v3"
-
-# All valid states. The order is the lifecycle order: pending → open → in-progress → done,
-# with wont as a side-path (tombstone).
-ALL_STATES = ("pending", "open", "in-progress", "done", "wont")
-ACTIVE_STATES = ("open", "in-progress")
-
-PRIORITY_ALIASES = {
-    "urgent": "P0", "critical": "P0",
-    "high": "P1",
-    "med": "P2", "medium": "P2",
-    "low": "P3",
-    "p0": "P0", "p1": "P1", "p2": "P2", "p3": "P3",
-}
-EFFORT_TOKENS = {"XS", "S", "M", "L", "XL"}
-
-
-def default_root() -> Path:
-    return Path(os.environ.get("TODO_CONTRACT_ROOT", str(Path.home() / ".todos"))).expanduser()
-
-
-# Mutable; set by main() once flags are parsed.
-ROOT: Path = default_root()
-
-
-# --------------------------------------------------------------------------------------
-# Tiny YAML reader/writer (registry.yaml is flat; PyYAML used if present, else hand-rolled)
-# --------------------------------------------------------------------------------------
-
-def _yaml_loads(text: str) -> dict:
-    try:
-        import yaml  # type: ignore
-        return yaml.safe_load(text) or {}
-    except Exception:
-        return _yaml_loads_minimal(text)
-
-
-def _yaml_dumps(data: dict) -> str:
-    try:
-        import yaml  # type: ignore
-        return yaml.safe_dump(data, sort_keys=False)
-    except Exception:
-        return _yaml_dumps_minimal(data)
-
-
-def _yaml_loads_minimal(text: str) -> dict:
-    out: dict = {}
-    cur_list = None
-    cur_item: dict | None = None
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        if not line or line.lstrip().startswith("#"):
-            continue
-        m = re.match(r"^  - (\w+):\s*(.*)$", line)
-        if m:
-            if cur_list is None:
-                continue
-            cur_item = {m.group(1): _coerce(m.group(2))}
-            cur_list.append(cur_item)
-            continue
-        m = re.match(r"^    (\w+):\s*(.*)$", line)
-        if m and cur_item is not None:
-            cur_item[m.group(1)] = _coerce(m.group(2))
-            continue
-        m = re.match(r"^(\w+):\s*(.*)$", line)
-        if m:
-            key, val = m.group(1), m.group(2)
-            if val == "":
-                cur_list = []
-                out[key] = cur_list
-                cur_item = None
-            else:
-                out[key] = _coerce(val)
-                cur_list = None
-                cur_item = None
-    return out
-
-
-def _coerce(raw: str):
-    raw = raw.strip()
-    if raw.lower() in ("true", "yes"):
-        return True
-    if raw.lower() in ("false", "no"):
-        return False
-    if raw.lower() in ("null", "~", ""):
-        return None
-    if raw.startswith(('"', "'")) and raw.endswith(raw[0]):
-        return raw[1:-1]
-    return raw
-
-
-def _yaml_dumps_minimal(data: dict) -> str:
-    lines: list[str] = []
-    for k, v in data.items():
-        if isinstance(v, list):
-            lines.append(f"{k}:")
-            for item in v:
-                first = True
-                for ik, iv in item.items():
-                    prefix = "  - " if first else "    "
-                    first = False
-                    lines.append(f"{prefix}{ik}: {_emit_scalar(iv)}")
-                lines.append("")
-        else:
-            lines.append(f"{k}: {_emit_scalar(v)}")
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _emit_scalar(v) -> str:
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if v is None:
-        return ""
-    return str(v)
+from .core import (
+    ACTIVE_STATES,
+    ALL_STATES,
+    Context,
+    SCHEMA,
+    Todo,
+    default_root,
+    ensure_project_dir,
+    find_project,
+    load_registry,
+    parse_todo_file,
+    project_dir,
+    save_registry,
+    todos_path,
+    _blank_file,
+)
+from . import events
+from .events import (
+    AlreadyClaimed,
+    EVENT_SCHEMA_VERSION,
+    HandEditCollision,
+    NotClaimedByActor,
+    TaskHeldByOtherActor,
+    UnknownTodo,
+    bootstrap_from_v30,
+    fold_events,
+    is_bootstrapped,
+    mutate,
+    read_events,
+    render_to_markdown,
+)
 
 
 # --------------------------------------------------------------------------------------
-# Markdown parsing — todo-contract/v3 §4 (per-todo block)
-# --------------------------------------------------------------------------------------
-
-@dataclass
-class Todo:
-    title: str
-    fields: dict[str, str] = field(default_factory=dict)
-    body: str = ""
-
-    @property
-    def status(self) -> str:
-        s = self.fields.get("status", "open").lower()
-        return s if s in ALL_STATES else "open"
-
-    @property
-    def priority(self) -> str:
-        return self.fields.get("priority", "P2")
-
-    @property
-    def slug(self) -> str:
-        t = self.title.strip("~* ").lower()
-        s = re.sub(r"[^a-z0-9]+", "-", t).strip("-")
-        return s[:80] or "untitled"
-
-    def to_md(self) -> str:
-        lines = [f"### {self.title}"]
-        for k in ("status", "priority", "effort", "agent", "created", "updated", "tags",
-                  "deferred", "wont_reason"):
-            if k in self.fields:
-                lines.append(f"- **{k}:** {self.fields[k]}")
-        canonical = {"status", "priority", "effort", "agent", "created", "updated", "tags",
-                     "deferred", "wont_reason"}
-        for k, v in self.fields.items():
-            if k not in canonical:
-                lines.append(f"- **{k}:** {v}")
-        if self.body.strip():
-            lines.append("")
-            lines.append(self.body.strip())
-        lines.append("")
-        lines.append("---")
-        lines.append("")
-        return "\n".join(lines)
-
-
-@dataclass
-class TodoFile:
-    path: Path
-    frontmatter: dict[str, str]
-    preamble: str
-    todos: list[Todo]
-
-    def write(self) -> None:
-        out: list[str] = []
-        if self.frontmatter:
-            out.append("---")
-            for k, v in self.frontmatter.items():
-                out.append(f"{k}: {v}")
-            out.append("---")
-            out.append("")
-        if self.preamble.strip():
-            out.append(self.preamble.rstrip())
-            out.append("")
-        for t in self.todos:
-            out.append(t.to_md())
-        self.path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
-
-
-_FIELD_RE = re.compile(r"^(?:-\s+)?\*\*(\w+):\*\*\s*(.*?)\s*$")
-
-
-def parse_todo_file(path: Path) -> TodoFile:
-    if not path.exists():
-        return TodoFile(path=path, frontmatter={}, preamble="", todos=[])
-
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines()
-
-    fm: dict[str, str] = {}
-    i = 0
-    if lines and lines[0].strip() == "---":
-        i = 1
-        while i < len(lines) and lines[i].strip() != "---":
-            m = re.match(r"^(\w+):\s*(.*)$", lines[i])
-            if m:
-                fm[m.group(1)] = m.group(2).strip()
-            i += 1
-        i += 1
-
-    preamble_lines: list[str] = []
-    while i < len(lines):
-        if lines[i].startswith("### ") or lines[i].startswith("## "):
-            break
-        preamble_lines.append(lines[i])
-        i += 1
-    preamble = "\n".join(preamble_lines).strip("\n")
-
-    todos: list[Todo] = []
-    in_done_group = False  # legacy v1 compat: ## Done section auto-marks done
-    while i < len(lines):
-        line = lines[i]
-        if line.startswith("## "):
-            heading = line[3:].strip().lower()
-            in_done_group = (heading == "done")
-            i += 1
-            continue
-        if line.startswith("### "):
-            title = line[4:].strip()
-            t = Todo(title=title)
-            i += 1
-            body_lines: list[str] = []
-            while i < len(lines):
-                ln = lines[i]
-                if ln.startswith("### ") or ln.startswith("## "):
-                    break
-                if ln.strip() == "---":
-                    i += 1
-                    break
-                m = _FIELD_RE.match(ln)
-                if m and not body_lines and ln.lstrip().startswith(("-", "*")):
-                    t.fields[m.group(1)] = _normalize_field(m.group(1), m.group(2))
-                else:
-                    body_lines.append(ln)
-                i += 1
-            while body_lines and not body_lines[-1].strip():
-                body_lines.pop()
-            t.body = "\n".join(body_lines)
-            # legacy v1 compat: ~~strikethrough~~ → done
-            if t.title.startswith("~~") and t.title.endswith("~~"):
-                t.fields.setdefault("status", "done")
-            elif in_done_group:
-                t.fields.setdefault("status", "done")
-            todos.append(t)
-            continue
-        i += 1
-
-    return TodoFile(path=path, frontmatter=fm, preamble=preamble, todos=todos)
-
-
-def _normalize_field(key: str, val: str) -> str:
-    v = val.strip()
-    if key == "priority":
-        return PRIORITY_ALIASES.get(v.lower(), v.upper() if v.lower().startswith("p") else v)
-    if key == "effort":
-        head = v.split()[0].upper() if v else v
-        return head if head in EFFORT_TOKENS else v
-    if key == "status":
-        return v.lower()
-    return v
-
-
-# --------------------------------------------------------------------------------------
-# Registry
-# --------------------------------------------------------------------------------------
-
-def load_registry() -> dict:
-    p = ROOT / "registry.yaml"
-    if not p.exists():
-        return {"schema": SCHEMA, "projects": []}
-    return _yaml_loads(p.read_text(encoding="utf-8"))
-
-
-def save_registry(reg: dict) -> None:
-    (ROOT / "registry.yaml").write_text(_yaml_dumps(reg), encoding="utf-8")
-
-
-def find_project(reg: dict, slug: str) -> dict | None:
-    for p in reg.get("projects", []):
-        if p.get("slug") == slug:
-            return p
-    return None
-
-
-# --------------------------------------------------------------------------------------
-# Project filesystem
-# --------------------------------------------------------------------------------------
-
-def project_dir(slug: str) -> Path:
-    return ROOT / slug
-
-
-def todos_path(slug: str) -> Path:
-    """The single canonical TODOS.md for a project."""
-    return project_dir(slug) / "TODOS.md"
-
-
-def ensure_project_dir(slug: str) -> None:
-    d = project_dir(slug)
-    d.mkdir(parents=True, exist_ok=True)
-    p = todos_path(slug)
-    if not p.exists():
-        p.write_text(_blank_file(slug), encoding="utf-8")
-
-
-def _blank_file(slug: str) -> str:
-    return (
-        f"---\nschema: {SCHEMA}\nproject: {slug}\n---\n\n"
-        f"# TODOS — {slug}\n\n"
-        f"Single canonical list. Lifecycle is encoded in each entry's `status:` field:\n"
-        f"`pending` (agent proposed) → `open` → `in-progress` → `done`. "
-        f"Side path: `wont` (tombstone for declined work).\n"
-    )
-
-
-# --------------------------------------------------------------------------------------
-# Git helpers
+# Git helpers — used only by cmd_init for the very first commit. Per-mutation
+# commits now live inside events.mutate (which handles retry on index.lock).
 # --------------------------------------------------------------------------------------
 
 def _git_available() -> bool:
     return shutil.which("git") is not None
 
 
-def git_commit(message: str, files: Iterable[Path]) -> None:
-    if not (ROOT / ".git").exists() or not _git_available():
+def git_commit(ctx: Context, message: str, files: Iterable[Path]) -> None:
+    if not (ctx.root / ".git").exists() or not _git_available():
         return
-    paths = [str(p.relative_to(ROOT)) for p in files if p.exists()]
+    paths = [str(p.relative_to(ctx.root)) for p in files if p.exists()]
     if not paths:
         return
     try:
-        subprocess.run(["git", "-C", str(ROOT), "add", *paths],
+        subprocess.run(["git", "-C", str(ctx.root), "add", *paths],
                        check=True, capture_output=True)
-        subprocess.run(["git", "-C", str(ROOT), "commit", "-m", message],
+        subprocess.run(["git", "-C", str(ctx.root), "commit", "-m", message],
                        check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
         msg = (e.stdout or b"").decode() + (e.stderr or b"").decode()
@@ -389,29 +107,56 @@ def git_commit(message: str, files: Iterable[Path]) -> None:
 
 
 # --------------------------------------------------------------------------------------
+# v3.1 mutation glue — auto-bootstrap + event construction
+# --------------------------------------------------------------------------------------
+
+def _ensure_v31(ctx: Context, slug: str) -> None:
+    """Auto-bootstrap a slug to v3.1 on first mutation. Idempotent."""
+    if is_bootstrapped(ctx, slug):
+        return
+    report = bootstrap_from_v30(ctx, slug)
+    if report["disambiguated"]:
+        for orig, new in report["disambiguated"]:
+            print(f"note: bootstrap renamed duplicate slug '{orig}' -> '{new}'",
+                  file=sys.stderr)
+
+
+def _now_iso_z() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _today_iso() -> str:
+    return dt.date.today().isoformat()
+
+
+def _current_state(ctx: Context, slug: str) -> dict[str, Todo]:
+    return fold_events(read_events(ctx, slug))
+
+
+# --------------------------------------------------------------------------------------
 # Commands
 # --------------------------------------------------------------------------------------
 
-def cmd_init(args) -> int:
+def cmd_init(ctx: Context, args) -> int:
     """Bootstrap ROOT: create dir, write registry.yaml + README, git init."""
-    ROOT.mkdir(parents=True, exist_ok=True)
-    reg_path = ROOT / "registry.yaml"
+    ctx.root.mkdir(parents=True, exist_ok=True)
+    reg_path = ctx.root / "registry.yaml"
     if not reg_path.exists():
-        save_registry({"schema": SCHEMA, "projects": []})
-    readme = ROOT / "README.md"
+        save_registry(ctx, {"schema": SCHEMA, "projects": []})
+    readme = ctx.root / "README.md"
     if not readme.exists():
         readme.write_text(_root_readme(), encoding="utf-8")
-    snap_dir = ROOT / "snapshots"
+    snap_dir = ctx.root / "snapshots"
     snap_dir.mkdir(exist_ok=True)
-    if _git_available() and not (ROOT / ".git").exists():
+    if _git_available() and not (ctx.root / ".git").exists():
         try:
-            subprocess.run(["git", "-C", str(ROOT), "init", "-q"], check=True)
-            subprocess.run(["git", "-C", str(ROOT), "add", "."], check=True, capture_output=True)
-            subprocess.run(["git", "-C", str(ROOT), "commit", "-m", "init: clawtodos root"],
+            subprocess.run(["git", "-C", str(ctx.root), "init", "-q"], check=True)
+            subprocess.run(["git", "-C", str(ctx.root), "add", "."], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(ctx.root), "commit", "-m", "init: clawtodos root"],
                            check=True, capture_output=True)
         except Exception as e:
             print(f"note: git init skipped ({e})", file=sys.stderr)
-    print(f"initialized: {ROOT}")
+    print(f"initialized: {ctx.root}")
     print()
     print("Next steps:")
     print(f"  1. Register a project:   todos add /path/to/your/repo")
@@ -433,8 +178,8 @@ def _root_readme() -> str:
     )
 
 
-def cmd_add(args) -> int:
-    reg = load_registry()
+def cmd_add(ctx: Context, args) -> int:
+    reg = load_registry(ctx)
     target = args.target
 
     if Path(target).exists():
@@ -458,39 +203,39 @@ def cmd_add(args) -> int:
     entry["ingest"] = bool(ingest)
     reg.setdefault("projects", []).append(entry)
     reg["schema"] = SCHEMA
-    save_registry(reg)
+    save_registry(ctx, reg)
 
-    ensure_project_dir(slug)
+    ensure_project_dir(ctx, slug)
     print(f"registered: {slug} (type={type_}, ingest={ingest})")
 
     if ingest and path is not None:
-        do_ingest(slug, path)
+        do_ingest(ctx, slug, path)
 
-    git_commit(f"register: {slug}", [ROOT / "registry.yaml", project_dir(slug)])
+    git_commit(ctx, f"register: {slug}", [ctx.root / "registry.yaml", project_dir(ctx, slug)])
     return 0
 
 
-def cmd_new(args) -> int:
+def cmd_new(ctx: Context, args) -> int:
     """Add a new todo with status=open (the explicit-approval path)."""
-    return _append_todo(args, default_status="open")
+    return _append_todo(ctx, args, default_status="open")
 
 
-def cmd_propose(args) -> int:
+def cmd_propose(ctx: Context, args) -> int:
     """Add a new todo with status=pending (the autonomous-agent path)."""
-    return _append_todo(args, default_status="pending")
+    return _append_todo(ctx, args, default_status="pending")
 
 
-def _append_todo(args, default_status: str) -> int:
-    reg = load_registry()
+def _append_todo(ctx: Context, args, default_status: str) -> int:
+    reg = load_registry(ctx)
     if not find_project(reg, args.slug):
         print(f"unknown slug: {args.slug}", file=sys.stderr)
         return 1
-    ensure_project_dir(args.slug)
-    p = todos_path(args.slug)
-    tf = parse_todo_file(p)
+    ensure_project_dir(ctx, args.slug)
+    _ensure_v31(ctx, args.slug)
 
-    today = dt.date.today().isoformat()
+    today = _today_iso()
     fields = {
+        "title": args.title,  # carried in the create event so render can recover it
         "status": default_status,
         "priority": (args.priority or "P2").upper(),
         "created": today,
@@ -502,20 +247,34 @@ def _append_todo(args, default_status: str) -> int:
     if args.tags:
         fields["tags"] = args.tags
 
-    new = Todo(title=args.title, fields=fields, body=(args.body or ""))
-    if any(t.slug == new.slug and t.status not in ("done", "wont") for t in tf.todos):
-        print(f"warning: a todo with id '{new.slug}' already exists in {args.slug}",
-              file=sys.stderr)
-    tf.todos.append(new)
-    tf.write()
+    # Compute the canonical todo-slug from the title (same rule as Todo.slug).
+    placeholder = Todo(title=args.title)
+    todo_slug = placeholder.slug
+    full_id = f"{args.slug}/{todo_slug}"
 
-    git_commit(f"{default_status}: {args.slug}/{new.slug}", [p])
-    print(f"added: {args.slug}/{new.slug} (status={default_status})")
+    state = _current_state(ctx, args.slug)
+    if full_id in state and state[full_id].fields.get("status") not in ("done", "wont"):
+        print(f"warning: a todo with id '{todo_slug}' already exists in {args.slug}",
+              file=sys.stderr)
+
+    evt = {
+        "v": EVENT_SCHEMA_VERSION,
+        "ts": _now_iso_z(),
+        "actor": args.agent or "human",
+        "event": "create",
+        "id": full_id,
+        "fields": fields,
+    }
+    if args.body:
+        evt["body"] = args.body
+    mutate(ctx, args.slug, [evt],
+           commit_message=f"{default_status}: {full_id}")
+    print(f"added: {full_id} (status={default_status})")
     return 0
 
 
-def cmd_list(args) -> int:
-    reg = load_registry()
+def cmd_list(ctx: Context, args) -> int:
+    reg = load_registry(ctx)
     slugs = [args.slug] if args.slug else [p["slug"] for p in reg.get("projects", [])]
 
     state_filter = (args.state or "active").lower()
@@ -538,7 +297,7 @@ def cmd_list(args) -> int:
             if not json_out:
                 print(f"unknown slug: {slug}", file=sys.stderr)
             continue
-        tf = parse_todo_file(todos_path(slug))
+        tf = parse_todo_file(todos_path(ctx, slug))
         counts = {s: 0 for s in ALL_STATES}
         rows: list[Todo] = []
         for t in tf.todos:
@@ -562,8 +321,6 @@ def cmd_list(args) -> int:
             "state_filter": state_filter,
             "projects": [],
         }
-        # Build projects list (include all asked-for slugs, even those with no
-        # rows in the current filter, so callers can see counts).
         included = {s for s, _ in per_slug_rows}
         ordered = [s for s, _ in per_slug_rows] + [
             s for s in per_slug_counts if s not in included
@@ -575,7 +332,6 @@ def cmd_list(args) -> int:
                 "counts": per_slug_counts.get(slug, {}),
                 "todos": [_todo_to_dict(slug, t) for t in rows],
             })
-        # Aggregate counts across all projects
         agg = {s: 0 for s in ALL_STATES}
         for c in per_slug_counts.values():
             for s, n in c.items():
@@ -644,30 +400,31 @@ def _todo_to_dict(slug: str, t: Todo) -> dict:
     }
 
 
-def cmd_set_status(args) -> int:
+def cmd_set_status(ctx: Context, args) -> int:
     """Generic state-flip primitive."""
-    return _flip_status(args.slug, args.id, args.to.lower(),
+    return _flip_status(ctx, args.slug, args.id, args.to.lower(),
                         reason=getattr(args, "reason", None))
 
 
-def cmd_approve(args) -> int:
-    return _flip_status(args.slug, args.id, "open")
+def cmd_approve(ctx: Context, args) -> int:
+    return _flip_status(ctx, args.slug, args.id, "open")
 
 
-def cmd_start(args) -> int:
-    return _flip_status(args.slug, args.id, "in-progress")
+def cmd_start(ctx: Context, args) -> int:
+    return _flip_status(ctx, args.slug, args.id, "in-progress")
 
 
-def cmd_done(args) -> int:
-    return _flip_status(args.slug, args.id, "done")
+def cmd_done(ctx: Context, args) -> int:
+    return _flip_status(ctx, args.slug, args.id, "done")
 
 
-def cmd_drop(args) -> int:
-    return _flip_status(args.slug, args.id, "wont", reason=args.reason)
+def cmd_drop(ctx: Context, args) -> int:
+    return _flip_status(ctx, args.slug, args.id, "wont", reason=args.reason)
 
 
-def _flip_status(slug: str, todo_id: str, target: str, reason: str | None = None) -> int:
-    reg = load_registry()
+def _flip_status(ctx: Context, slug: str, todo_id: str, target: str,
+                 reason: str | None = None) -> int:
+    reg = load_registry(ctx)
     if not find_project(reg, slug):
         print(f"unknown slug: {slug}", file=sys.stderr)
         return 1
@@ -675,50 +432,72 @@ def _flip_status(slug: str, todo_id: str, target: str, reason: str | None = None
         print(f"bad status: {target}. Must be one of {ALL_STATES}", file=sys.stderr)
         return 1
 
-    p = todos_path(slug)
-    tf = parse_todo_file(p)
-    todo = next((t for t in tf.todos if t.slug == todo_id), None)
-    if not todo:
-        print(f"not found: {slug}/{todo_id}", file=sys.stderr)
+    _ensure_v31(ctx, slug)
+    full_id = f"{slug}/{todo_id}"
+    state = _current_state(ctx, slug)
+    if full_id not in state:
+        print(f"not found: {full_id}", file=sys.stderr)
         return 1
 
-    prev = todo.status
+    prev = state[full_id].fields.get("status", "open")
     if prev == target:
-        print(f"already {target}: {slug}/{todo_id}")
+        print(f"already {target}: {full_id}")
         return 0
 
-    today = dt.date.today().isoformat()
-    todo.fields["status"] = target
-    todo.fields["updated"] = today
-    if target != "pending":
-        todo.fields.pop("deferred", None)
-    if target == "wont" and reason:
-        todo.fields["wont_reason"] = reason
+    # Map target status to the right event type. start/done/drop have dedicated
+    # events; everything else (pending, open) goes through `update`.
+    event_type_map = {"in-progress": "start", "done": "done", "wont": "drop"}
+    event_type = event_type_map.get(target, "update")
 
-    tf.write()
+    evt: dict = {
+        "v": EVENT_SCHEMA_VERSION,
+        "ts": _now_iso_z(),
+        "actor": "human",
+        "event": event_type,
+        "id": full_id,
+    }
+    if event_type == "drop" and reason:
+        evt["reason"] = reason
+    elif event_type == "update":
+        # `update` carries an explicit fields patch.
+        update_fields: dict = {"status": target, "updated": _today_iso()}
+        if target != "pending":
+            update_fields["deferred"] = None  # None => pop in _apply_event
+        evt["fields"] = update_fields
+
     suffix = f" ({reason})" if reason else ""
-    git_commit(f"{target}: {slug}/{todo_id}{suffix}", [p])
-    print(f"{slug}/{todo_id}: {prev} -> {target}")
+    mutate(ctx, slug, [evt], commit_message=f"{target}: {full_id}{suffix}")
+    print(f"{full_id}: {prev} -> {target}")
     return 0
 
 
-def cmd_defer(args) -> int:
-    p = todos_path(args.slug)
-    tf = parse_todo_file(p)
-    todo = next((t for t in tf.todos if t.slug == args.id), None)
-    if not todo:
-        print(f"not found: {args.slug}/{args.id}", file=sys.stderr)
+def cmd_defer(ctx: Context, args) -> int:
+    reg = load_registry(ctx)
+    if not find_project(reg, args.slug):
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
         return 1
-    todo.fields["deferred"] = args.until
-    todo.fields["updated"] = dt.date.today().isoformat()
-    tf.write()
-    git_commit(f"defer: {args.slug}/{args.id} until {args.until}", [p])
-    print(f"deferred: {args.slug}/{args.id} until {args.until}")
+    _ensure_v31(ctx, args.slug)
+    full_id = f"{args.slug}/{args.id}"
+    state = _current_state(ctx, args.slug)
+    if full_id not in state:
+        print(f"not found: {full_id}", file=sys.stderr)
+        return 1
+    evt = {
+        "v": EVENT_SCHEMA_VERSION,
+        "ts": _now_iso_z(),
+        "actor": "human",
+        "event": "defer",
+        "id": full_id,
+        "until": args.until,
+    }
+    mutate(ctx, args.slug, [evt],
+           commit_message=f"defer: {full_id} until {args.until}")
+    print(f"deferred: {full_id} until {args.until}")
     return 0
 
 
-def cmd_ingest(args) -> int:
-    reg = load_registry()
+def cmd_ingest(ctx: Context, args) -> int:
+    reg = load_registry(ctx)
     proj = find_project(reg, args.slug)
     if not proj:
         print(f"unknown slug: {args.slug}", file=sys.stderr)
@@ -727,13 +506,13 @@ def cmd_ingest(args) -> int:
     if not path_str:
         print(f"slug '{args.slug}' has no source path; nothing to ingest", file=sys.stderr)
         return 1
-    do_ingest(args.slug, Path(os.path.expanduser(path_str)).resolve())
+    do_ingest(ctx, args.slug, Path(os.path.expanduser(path_str)).resolve())
     return 0
 
 
-def do_ingest(slug: str, source: Path) -> None:
-    """Scan source repo for existing todos. Append as `status: pending` so the
-    user can review and approve."""
+def do_ingest(ctx: Context, slug: str, source: Path) -> None:
+    """Scan source repo for existing todos. Construct create events with
+    status=pending (or terminal states preserved) and route through events.mutate."""
     found: list[Todo] = []
 
     # 1) v1 in-repo TODOS.md
@@ -742,11 +521,8 @@ def do_ingest(slug: str, source: Path) -> None:
         tf = parse_todo_file(v1)
         for t in tf.todos:
             t.fields.setdefault("agent", "ingest")
-            # Preserve terminal states (done/wont) instead of forcing them
-            # back into the review queue. v1 conventions like `## Done`
-            # group headings or `~~strikethrough~~` titles surface as
-            # status=done at parse time; respect that. Only items that
-            # were genuinely active in the source repo go to pending.
+            # Preserve terminal states (done/wont). Only genuinely active items
+            # land in pending for human review.
             if t.status not in ("done", "wont"):
                 t.fields["status"] = "pending"
             found.append(t)
@@ -768,42 +544,67 @@ def do_ingest(slug: str, source: Path) -> None:
         print(f"ingested 0 entries from {source}")
         return
 
-    # Append into the project's TODOS.md (don't overwrite existing entries by id)
-    p = todos_path(slug)
-    project_dir(slug).mkdir(parents=True, exist_ok=True)
-    if not p.exists():
-        p.write_text(_blank_file(slug), encoding="utf-8")
-    tf = parse_todo_file(p)
-    existing_slugs = {t.slug for t in tf.todos}
+    project_dir(ctx, slug).mkdir(parents=True, exist_ok=True)
+    _ensure_v31(ctx, slug)
+    state = _current_state(ctx, slug)
+
+    events_to_write: list[dict] = []
     new_count = 0
+    seen_in_batch: set[str] = set()
     for t in found:
-        if t.slug in existing_slugs:
+        full_id = f"{slug}/{t.slug}"
+        # Skip duplicates against existing state AND against earlier items in this batch.
+        if full_id in state or full_id in seen_in_batch:
             continue
-        tf.todos.append(t)
+        seen_in_batch.add(full_id)
+        fields = dict(t.fields)
+        fields["title"] = t.title
+        evt = {
+            "v": EVENT_SCHEMA_VERSION,
+            "ts": _now_iso_z(),
+            "actor": "ingest",
+            "event": "create",
+            "id": full_id,
+            "fields": fields,
+        }
+        if t.body:
+            evt["body"] = t.body
+        events_to_write.append(evt)
         new_count += 1
-    tf.write()
-    git_commit(f"ingest: {slug} ({new_count} new from {source.name})", [p])
-    print(f"ingested {new_count} new entries from {source} -> {p}")
+
+    if events_to_write:
+        mutate(ctx, slug, events_to_write,
+               commit_message=f"ingest: {slug} ({new_count} new from {source.name})")
+    print(f"ingested {new_count} new entries from {source} -> {todos_path(ctx, slug)}")
 
 
-def _all_todos() -> list[tuple[str, Todo]]:
-    """Return (slug, Todo) pairs across every registered project."""
-    reg = load_registry()
-    out = []
+def _all_todos(ctx: Context) -> list[tuple[str, Todo]]:
+    """Return (slug, Todo) pairs across every registered project.
+
+    For bootstrapped slugs, reads the event log directly (the source of truth).
+    For unbootstrapped slugs (legacy v3.0), falls back to parsing TODOS.md.
+    """
+    reg = load_registry(ctx)
+    out: list[tuple[str, Todo]] = []
     for proj in reg.get("projects", []):
         slug = proj["slug"]
-        tf = parse_todo_file(todos_path(slug))
-        for t in tf.todos:
-            out.append((slug, t))
+        if is_bootstrapped(ctx, slug):
+            state = _current_state(ctx, slug)
+            for full_id in sorted(state.keys()):
+                out.append((slug, state[full_id]))
+        else:
+            tf = parse_todo_file(todos_path(ctx, slug))
+            for t in tf.todos:
+                out.append((slug, t))
     return out
 
 
-def cmd_index(_args) -> int:
+def cmd_index(ctx: Context, _args) -> int:
     today = dt.date.today()
     today_iso = today.isoformat()
     week_ago = (today - dt.timedelta(days=7)).isoformat()
 
-    todos = _all_todos()
+    todos = _all_todos(ctx)
     visible_pending = [(s, t) for s, t in todos
                        if t.status == "pending"
                        and (not t.fields.get("deferred") or t.fields["deferred"] <= today_iso)]
@@ -860,7 +661,7 @@ def cmd_index(_args) -> int:
     # By project
     lines.append("## By project")
     lines.append("")
-    reg = load_registry()
+    reg = load_registry(ctx)
     for proj in reg.get("projects", []):
         slug = proj["slug"]
         recs = by_proj_active.get(slug, [])
@@ -893,20 +694,20 @@ def cmd_index(_args) -> int:
             lines.append(f"- `{s}` — {t.title} _(last touched {updated})_")
         lines.append("")
 
-    (ROOT / "INDEX.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-    print(f"wrote {ROOT / 'INDEX.md'}")
+    (ctx.root / "INDEX.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    print(f"wrote {ctx.root / 'INDEX.md'}")
     return 0
 
 
-def cmd_snapshot(_args) -> int:
+def cmd_snapshot(ctx: Context, _args) -> int:
     """Write a weekly snapshot to ~/.todos/snapshots/YYYY-Wxx.json."""
-    snap_dir = ROOT / "snapshots"
+    snap_dir = ctx.root / "snapshots"
     snap_dir.mkdir(exist_ok=True)
     today = dt.date.today()
     iso_year, iso_week, _ = today.isocalendar()
     snap_path = snap_dir / f"{iso_year}-W{iso_week:02d}.json"
 
-    todos = _all_todos()
+    todos = _all_todos(ctx)
     payload = {
         "schema": SCHEMA,
         "snapshot_date": today.isoformat(),
@@ -933,23 +734,23 @@ def cmd_snapshot(_args) -> int:
         ],
     }
     snap_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    git_commit(f"snapshot: {iso_year}-W{iso_week:02d}", [snap_path])
+    git_commit(ctx, f"snapshot: {iso_year}-W{iso_week:02d}", [snap_path])
     print(f"wrote snapshot: {snap_path} ({payload['counts']['total']} todos)")
     return 0
 
 
-def cmd_doctor(_args) -> int:
+def cmd_doctor(ctx: Context, _args) -> int:
     problems = 0
-    if not ROOT.exists():
-        print(f"root missing: {ROOT}", file=sys.stderr)
+    if not ctx.root.exists():
+        print(f"root missing: {ctx.root}", file=sys.stderr)
         return 1
-    reg = load_registry()
+    reg = load_registry(ctx)
     if reg.get("schema") != SCHEMA:
         print(f"warn: registry schema is {reg.get('schema')!r}, expected {SCHEMA!r}")
         problems += 1
     for proj in reg.get("projects", []):
         slug = proj["slug"]
-        p = todos_path(slug)
+        p = todos_path(ctx, slug)
         if not p.exists():
             print(f"warn: missing {p}")
             problems += 1
@@ -960,8 +761,102 @@ def cmd_doctor(_args) -> int:
                 print(f"info: {slug} has a v1-style in-repo TODOS.md at {in_repo}")
                 print(f"      consider: todos ingest {slug} (one-shot import as pending)")
     if problems == 0:
-        print(f"ok: root={ROOT}, projects={len(reg.get('projects', []))}, schema={SCHEMA}")
+        print(f"ok: root={ctx.root}, projects={len(reg.get('projects', []))}, schema={SCHEMA}")
     return 0 if problems == 0 else 2
+
+
+# --------------------------------------------------------------------------------------
+# v3.1 commands: claim / release / handoff / render
+# --------------------------------------------------------------------------------------
+
+def _resolve_actor(args) -> str:
+    """Pull --actor or fall back to $USER. Coordination commands need an explicit
+    identity; --agent on creation commands is for who proposed the work."""
+    actor = getattr(args, "actor", None) or os.environ.get("USER", "human")
+    return actor
+
+
+def cmd_claim(ctx: Context, args) -> int:
+    reg = load_registry(ctx)
+    if not find_project(reg, args.slug):
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
+        return 1
+    _ensure_v31(ctx, args.slug)
+    actor = _resolve_actor(args)
+    try:
+        result = events.claim(ctx, args.slug, args.id, actor=actor,
+                              lease_seconds=args.lease or events.DEFAULT_LEASE_SECONDS)
+    except UnknownTodo as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except AlreadyClaimed as e:
+        print(f"error: already_claimed by {e.claimed_by} until {e.lease_until}",
+              file=sys.stderr)
+        return 1
+    print(f"claimed: {result['id']} by {result['claimed_by']} until {result['lease_until']}")
+    return 0
+
+
+def cmd_release(ctx: Context, args) -> int:
+    reg = load_registry(ctx)
+    if not find_project(reg, args.slug):
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
+        return 1
+    _ensure_v31(ctx, args.slug)
+    actor = _resolve_actor(args)
+    try:
+        events.release(ctx, args.slug, args.id, actor=actor)
+    except UnknownTodo as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except NotClaimedByActor as e:
+        print(f"error: not_claimed_by_actor: {e}", file=sys.stderr)
+        return 1
+    print(f"released: {args.slug}/{args.id}")
+    return 0
+
+
+def cmd_handoff(ctx: Context, args) -> int:
+    reg = load_registry(ctx)
+    if not find_project(reg, args.slug):
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
+        return 1
+    _ensure_v31(ctx, args.slug)
+    actor = _resolve_actor(args)
+    try:
+        result = events.handoff(ctx, args.slug, args.id, actor=actor, to=args.to,
+                                note=args.note,
+                                lease_seconds=args.lease or events.DEFAULT_LEASE_SECONDS)
+    except UnknownTodo as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except TaskHeldByOtherActor as e:
+        print(f"error: task_held_by_other_actor: {e}", file=sys.stderr)
+        return 1
+    print(f"handoff: {result['id']} -> {result['handoff_to']} (lease {result['lease_until']})")
+    return 0
+
+
+def cmd_render(ctx: Context, args) -> int:
+    """Re-render TODOS.md from EVENTS.ndjson, discarding any hand-edits."""
+    reg = load_registry(ctx)
+    if not find_project(reg, args.slug):
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
+        return 1
+    _ensure_v31(ctx, args.slug)
+    with events.project_lock(ctx, args.slug):
+        text = render_to_markdown(ctx, args.slug)
+        # Record a render event so detect-and-block has a fresh hash to compare against.
+        render_evt = {
+            "v": EVENT_SCHEMA_VERSION,
+            "ts": _now_iso_z(),
+            "actor": _resolve_actor(args),
+            "event": "render",
+            "hash": events.render_hash(text),
+        }
+        events.append_event(ctx, args.slug, render_evt)
+    print(f"rendered: {todos_path(ctx, args.slug)}")
+    return 0
 
 
 # --------------------------------------------------------------------------------------
@@ -1063,20 +958,49 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("doctor", help="sanity check the central tree")
     a.set_defaults(func=cmd_doctor)
 
+    # v3.1 coordination commands
+    a = sub.add_parser("claim", help="claim a task with a lease (v3.1)")
+    a.add_argument("slug"); a.add_argument("id")
+    a.add_argument("--actor", help="agent identity (default: $USER)")
+    a.add_argument("--lease", type=int,
+                   help=f"lease duration in seconds (default: 3600, max: 86400)")
+    a.set_defaults(func=cmd_claim)
+
+    a = sub.add_parser("release", help="release a claim (v3.1)")
+    a.add_argument("slug"); a.add_argument("id")
+    a.add_argument("--actor", help="agent identity (default: $USER)")
+    a.set_defaults(func=cmd_release)
+
+    a = sub.add_parser("handoff", help="hand off a task to another actor (v3.1)")
+    a.add_argument("slug"); a.add_argument("id")
+    a.add_argument("--to", required=True, help="recipient agent slug")
+    a.add_argument("--actor", help="agent identity (default: $USER)")
+    a.add_argument("--note", help="optional handoff note")
+    a.add_argument("--lease", type=int,
+                   help=f"recipient's lease duration in seconds (default: 3600)")
+    a.set_defaults(func=cmd_handoff)
+
+    a = sub.add_parser("render", help="re-render TODOS.md from EVENTS.ndjson, "
+                                       "discarding any hand-edits (v3.1)")
+    a.add_argument("slug")
+    a.add_argument("--actor", help="agent identity for the render event")
+    a.set_defaults(func=cmd_render)
+
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
-    global ROOT
     parser = build_parser()
     args = parser.parse_args(argv)
     if getattr(args, "root", None):
-        ROOT = Path(os.path.expanduser(args.root)).resolve()
+        ctx = Context(root=Path(os.path.expanduser(args.root)).resolve())
+    else:
+        ctx = Context.from_default()
     if args.cmd != "init":
-        if not ROOT.exists():
-            print(f"error: {ROOT} does not exist. Run `todos init` first.", file=sys.stderr)
+        if not ctx.root.exists():
+            print(f"error: {ctx.root} does not exist. Run `todos init` first.", file=sys.stderr)
             return 1
-    return args.func(args)
+    return args.func(ctx, args)
 
 
 if __name__ == "__main__":

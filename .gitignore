@@ -23,3 +23,8 @@ env/
 # Local-only test roots
 /tmp-todos/
 *.local
+
+# Per-project filelock sidecars (filelock writes these alongside EVENTS.ndjson
+# in the central ~/.todos/<slug>/ store, but if a stray one ever lands in this
+# repo, ignore it).
+.lock

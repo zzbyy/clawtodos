@@ -64,6 +64,24 @@ When you talk to your AI normally, it translates your sentences into the right s
 
 ---
 
+## What's new in v3.1
+
+> **Multi-agent coordination + MCP server.** Multiple AI agents on the same machine can now coordinate on the same task store without colliding. Plus a stdio MCP server so any MCP-aware agent (Claude Desktop, Cursor, Continue, Zed) speaks the protocol natively. See [SPEC-v3.1.md](SPEC-v3.1.md) for the full spec deltas.
+
+```bash
+pip install 'clawtodos[mcp]'      # adds the MCP server (Python 3.10+)
+```
+
+Then add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "clawtodos": { "command": "clawtodos-mcp" } } }
+```
+
+Restart Claude Desktop. Tools `projects.list`, `tasks.{list,create,claim,release,handoff,start,done,drop}` are now available. The same store works concurrently with `todos claim` / `todos handoff` from other agents (Codex CLI, Cursor, etc.). New CLI verbs: `todos claim`, `todos release`, `todos handoff`, `todos render`. See [SPEC-v3.1.md §8](SPEC-v3.1.md) for claim/handoff semantics.
+
+---
+
 ## Install
 
 clawtodos is **agent-native** — the whole product is "your AI does work for you." Installation works the same way. Paste one line into any AI agent you already use and it walks you through everything: install the CLI, bootstrap the central system, wire up your other agents, register your projects, queue your first review.

@@ -1,6 +1,6 @@
 ---
 name: clawtodos
-description: zZ's central task system across every project (code repos and personal programs). One file per project at ~/.todos/<slug>/TODOS.md, lifecycle in a status field. Use this skill whenever zZ asks about todos, what's left, what to work on, what's pending, what shipped, what's outstanding across everything, or wants to add/start/finish/drop/defer a todo. Also handles the weekly review and proactive heartbeat alerts for new P0/P1 / stale items / pending proposals.
+description: zZ's central task system across every project (code repos and personal programs). One file per project at ~/.todos/<slug>/TODOS.md, lifecycle in a status field, append-only EVENTS.ndjson event log under it (v3.1+). Use this skill whenever zZ asks about todos, what's left, what to work on, what's pending, what shipped, what's outstanding across everything, or wants to add/start/finish/drop/defer/claim/release/handoff a todo. Also handles the weekly review, multi-agent coordination via leases (v3.1+), and proactive heartbeat alerts for new P0/P1 / stale items / pending proposals.
 ---
 
 # clawtodos — central task system for zZ
@@ -22,9 +22,9 @@ This skill is the day-to-day surface — you (the agent) translate zZ's natural-
 | Heartbeat alerts | Surface new P0/P1, stale items, pending review proposals |
 | Weekly review | Diff vs last week's snapshot |
 
-## The 11 conversational patterns (the contract)
+## The conversational patterns (the contract)
 
-These are spec-level (see SPEC.md §6). Recognize variants of these phrases and map them to the listed CLI calls. Don't paraphrase the actions — use exactly the right verb.
+These are spec-level (see SPEC.md §6 + SPEC-v3.1.md §8). Recognize variants of these phrases and map them to the listed CLI calls. Don't paraphrase the actions — use exactly the right verb.
 
 | zZ says (or close paraphrase) | You run |
 |---|---|
@@ -39,6 +39,20 @@ These are spec-level (see SPEC.md §6). Recognize variants of these phrases and 
 | "defer `<X>` to `<date>`" | `todos defer <slug> <id> --until YYYY-MM-DD` |
 | "approve `<X>`" / "yes, add it" (in response to a pending review) | `todos approve <slug> <id>` |
 | "weekly review" / "what shipped this week" | Run §"Weekly review" routine below |
+| **"claim `<X>`" / "I'll take `<X>`"** (v3.1) | `todos claim <slug> <id> --actor openclaw` (1h lease default) |
+| **"release `<X>`" / "give it back"** (v3.1) | `todos release <slug> <id> --actor openclaw` |
+| **"hand off `<X>` to `<Y>`" / "let `<Y>` finish this"** (v3.1) | `todos handoff <slug> <id> --actor openclaw --to <Y>` |
+| **"render `<slug>`" / "TODOS.md got hand-edited, fix it"** (v3.1) | `todos render <slug>` (rebuilds TODOS.md from EVENTS.ndjson, discards manual edits) |
+
+## Multi-agent coordination (v3.1+)
+
+When more than one agent runs against the same `~/.todos/<slug>/`, claim the task before working on it:
+
+1. **Before starting non-trivial work:** read `claimed_by` on the target todo. If another agent holds the claim and the lease hasn't expired, pick a different task or check back later.
+2. **For long-running work (>5 minutes):** re-claim periodically. The lease defaults to 1h, max 24h. If you're past your lease, another agent may steal the task assuming you crashed.
+3. **`claim` succeeds when:** (a) nobody holds it, (b) the lease expired, or (c) you ARE the current holder (self-refresh).
+4. **`handoff` succeeds when:** (a) nobody holds it (delegation: routing it to `<Y>` on zZ's behalf), or (b) you ARE the current holder. Otherwise fails with `task_held_by_other_actor`.
+5. **Claims are advisory hints**, not enforcement. `start`/`done`/`drop` do NOT check the claim. The system trusts cooperating agents to respect it.
 
 ## Resolving "&lt;X&gt;" to a `<slug>/<id>`
 

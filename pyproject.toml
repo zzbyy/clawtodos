@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clawtodos"
-version = "3.0.0"
+version = "3.1.0.dev0"
 description = "Agent-native task manager. AI agents propose work; you approve. Cross-project, cross-tool, central."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -12,7 +12,7 @@ license = { file = "LICENSE" }
 authors = [
     { name = "zzbyy" }
 ]
-keywords = ["todo", "task", "ai", "agent", "claude", "codex", "cursor", "openclaw", "todo-contract"]
+keywords = ["todo", "task", "ai", "agent", "claude", "codex", "cursor", "openclaw", "todo-contract", "mcp"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -26,9 +26,22 @@ classifiers = [
     "Topic :: Office/Business :: Scheduling",
     "Topic :: Software Development :: Libraries",
 ]
+dependencies = [
+    # Cross-platform file locking. Used by clawtodos.events for the per-project
+    # write lock. Required at base level (not optional) because every mutating
+    # CLI verb routes through the same event-log write path.
+    "filelock>=3.12,<4.0",
+]
+
+[project.optional-dependencies]
+# `pip install clawtodos[mcp]` installs the MCP stdio server dependency.
+# The mcp SDK requires Python >= 3.10; users on 3.9 can still use the CLI.
+mcp = ["mcp>=1.0,<2.0"]
+dev = ["pytest>=7", "mcp>=1.0,<2.0; python_version >= '3.10'"]
 
 [project.scripts]
 todos = "clawtodos.cli:main"
+clawtodos-mcp = "clawtodos.mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/zzbyy/clawtodos"

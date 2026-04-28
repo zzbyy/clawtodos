@@ -8,3 +8,8 @@
 {"intent":"defer this to next week","expected_skill":"clawtodos"}
 {"intent":"show me what's left to do","expected_skill":"clawtodos"}
 {"intent":"give me a summary of all open items","expected_skill":"clawtodos"}
+{"intent":"claim the auth refactor task","expected_skill":"clawtodos"}
+{"intent":"I'll take the migration ticket","expected_skill":"clawtodos"}
+{"intent":"hand off the doc cleanup to codex","expected_skill":"clawtodos"}
+{"intent":"release my claim on the parser refactor","expected_skill":"clawtodos"}
+{"intent":"what is claude working on right now","expected_skill":"clawtodos"}
