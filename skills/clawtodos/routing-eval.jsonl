@@ -1,0 +1,10 @@
+{"intent":"show me all the todos across my projects","expected_skill":"clawtodos"}
+{"intent":"run the clawtodos system","expected_skill":"clawtodos"}
+{"intent":"what are my agents working on","expected_skill":"clawtodos"}
+{"intent":"list all active tasks","expected_skill":"clawtodos"}
+{"intent":"anything pending that needs my attention","expected_skill":"clawtodos"}
+{"intent":"put a new item on my list","expected_skill":"clawtodos"}
+{"intent":"mark that task as done","expected_skill":"clawtodos"}
+{"intent":"defer this to next week","expected_skill":"clawtodos"}
+{"intent":"show me what's left to do","expected_skill":"clawtodos"}
+{"intent":"give me a summary of all open items","expected_skill":"clawtodos"}
