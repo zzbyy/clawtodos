@@ -3,8 +3,8 @@
 > **Agent-native task manager.** Multiple AI agents propose work. You approve. One central place to look across every project, code repo, and personal program. Repos stay clean. Nothing scattered.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Spec](https://img.shields.io/badge/spec-todo--contract%2Fv3-blue)](SPEC.md)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue)](pyproject.toml)
+[![Spec](https://img.shields.io/badge/spec-v3.1-blue)](SPEC-v3.1.md)
+[![Python](https://img.shields.io/badge/python-3.9%2B%20(MCP%3A%203.10%2B)-blue)](pyproject.toml)
 [![Cross-platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-supported-brightgreen)](#install)
 
 ```
@@ -68,17 +68,97 @@ When you talk to your AI normally, it translates your sentences into the right s
 
 > **Multi-agent coordination + MCP server.** Multiple AI agents on the same machine can now coordinate on the same task store without colliding. Plus a stdio MCP server so any MCP-aware agent (Claude Desktop, Cursor, Continue, Zed) speaks the protocol natively. See [SPEC-v3.1.md](SPEC-v3.1.md) for the full spec deltas.
 
+### Try it in 30 seconds
+
 ```bash
-pip install 'clawtodos[mcp]'      # adds the MCP server (Python 3.10+)
+pip install 'git+https://github.com/zzbyy/clawtodos.git@v3.1.0'
+bash <(curl -sSL https://raw.githubusercontent.com/zzbyy/clawtodos/main/examples/demo/two_agent_race.sh)
 ```
 
-Then add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+That's a self-contained demo: spawns "alice" and "bob" racing for the same task, shows the collision error, the handoff, and the full audit log. Uses a tmp dir; never touches your real `~/.todos`.
+
+### What you can now do
+
+**As a human at a CLI** — three new verbs round out the v3.1 surface:
+
+```bash
+todos claim   <slug> <id> --actor <name> [--lease 3600]   # take a 1h lease (default)
+todos release <slug> <id> --actor <name>                  # give it back
+todos handoff <slug> <id> --actor <name> --to <Y> [--note ...]  # delegate / re-route
+todos render  <slug>                                      # rebuild TODOS.md from EVENTS.ndjson
+```
+
+**As an AI agent in conversation** — the new conversational vocabulary (per [SPEC-v3.1.md §8](SPEC-v3.1.md)):
+
+| You say | The agent runs |
+|---|---|
+| *"claim the auth refactor"* | `todos claim my-app fix-auth-refactor --actor <self>` |
+| *"I'll take that"* | (same — agent uses its own slug as `--actor`) |
+| *"hand off the migration to codex"* | `todos handoff my-app schema-migration --actor <self> --to codex` |
+| *"let claude finish this"* | `todos handoff my-app some-id --actor <self> --to claude-code` |
+| *"release my claim"* | `todos release my-app some-id --actor <self>` |
+| *"what is codex working on?"* | `todos list --json` then read `claimed_by` fields |
+| *"TODOS.md got hand-edited, fix it"* | `todos render my-app` |
+
+### A short walkthrough — alice and bob coordinate on one task
+
+```bash
+# Setup (one task, fresh project)
+$ todos new my-app "Implement claim semantics" --priority P1 --agent claude-code
+added: my-app/implement-claim-semantics (status=open)
+
+# Two terminals racing for the same claim:
+# Terminal 1 (alice):
+$ todos claim my-app implement-claim-semantics --actor alice
+claimed: my-app/implement-claim-semantics by alice until 2026-04-28T16:24:18Z
+
+# Terminal 2 (bob), simultaneously:
+$ todos claim my-app implement-claim-semantics --actor bob
+error: already_claimed by alice until 2026-04-28T16:24:18Z      # bob picks a different task
+
+# Later, alice realizes bob is better suited:
+$ todos handoff my-app implement-claim-semantics --actor alice --to bob --note "your area"
+handoff: my-app/implement-claim-semantics -> bob (lease 2026-04-28T17:24:19Z)
+
+# bob ships it:
+$ todos done my-app implement-claim-semantics
+my-app/implement-claim-semantics: open -> done
+```
+
+The full audit log lives at `~/.todos/my-app/EVENTS.ndjson`:
+
+```jsonl
+{"v":1,"ts":"...","actor":"claude-code","event":"create","id":"my-app/implement-claim-semantics","fields":{...}}
+{"v":1,"ts":"...","actor":"alice","event":"claim","id":"my-app/implement-claim-semantics","lease_until":"..."}
+{"v":1,"ts":"...","actor":"alice","event":"handoff","id":"my-app/implement-claim-semantics","to":"bob","lease_until":"..."}
+{"v":1,"ts":"...","actor":"bob","event":"done","id":"my-app/implement-claim-semantics"}
+```
+
+`TODOS.md` is the human-readable render of the log; the log is the source of truth. Plain text, no DB, no daemon. Hand-editing `TODOS.md` while a mutation is happening is detected and blocked; `todos render` re-derives the file from the log.
+
+### Wiring `clawtodos-mcp` into Claude Desktop
+
+Tools become available in any MCP-aware client. For Claude Desktop, edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
-{ "mcpServers": { "clawtodos": { "command": "clawtodos-mcp" } } }
+{
+  "mcpServers": {
+    "clawtodos": { "command": "clawtodos-mcp" }
+  }
+}
 ```
 
-Restart Claude Desktop. Tools `projects.list`, `tasks.{list,create,claim,release,handoff,start,done,drop}` are now available. The same store works concurrently with `todos claim` / `todos handoff` from other agents (Codex CLI, Cursor, etc.). New CLI verbs: `todos claim`, `todos release`, `todos handoff`, `todos render`. See [SPEC-v3.1.md §8](SPEC-v3.1.md) for claim/handoff semantics.
+Restart Claude Desktop. In the next conversation, ask *"what's on the clawtodos list?"* — Claude calls `tasks.list` over MCP and shows the live state. Try the same against Codex CLI in another terminal — both agents now coordinate through the same `~/.todos/<slug>/` store.
+
+Tools exposed: `projects.list`, `tasks.{list,create,claim,release,handoff,start,done,drop}`. Errors carry stable code strings (`unknown_id`, `already_claimed`, `task_held_by_other_actor`, `not_claimed_by_actor`, `bad_transition`, etc.) so agents can react programmatically rather than parsing prose.
+
+### What v3.1 changes (vs v3.0, the brief version)
+
+- **`pending` is now an optional soft-norm**, not a required gate. Agents may use it when uncertain or write directly to `open` when context is clear. Conversational vocabulary ("approve X") still works on `pending` entries. Behavioral change — see [SPEC-v3.1.md §5](SPEC-v3.1.md).
+- **`EVENTS.ndjson` is the new source of truth.** `TODOS.md` becomes a deterministic render. Existing v3.0 stores auto-bootstrap on first v3.1 mutation (idempotent, never destructive, with duplicate-slug auto-disambiguation).
+- **Claims are advisory hints**, not enforcement. `start` / `done` / `drop` do not check the claim. Well-behaved agents respect it; the system trusts cooperating agents on one user's machine. Multi-user / signed-actor scenarios are deferred to v4.
+
+Full release notes: [CHANGELOG.md](CHANGELOG.md#310--2026-04-28-compliance-kit). Spec: [SPEC-v3.1.md](SPEC-v3.1.md).
 
 ---
 

@@ -28,7 +28,7 @@ If you don't have an existing relationship, GitHub issues / Discord / X DMs all 
 - **Self-contained demo (no install needed beyond the CLI):**
   ```bash
   pip install 'git+https://github.com/zzbyy/clawtodos.git@v3.1.0[mcp]'
-  curl -O https://raw.githubusercontent.com/zzbyy/clawtodos/v3.1.0/examples/demo/two_agent_race.sh
+  curl -O https://raw.githubusercontent.com/zzbyy/clawtodos/main/examples/demo/two_agent_race.sh
   bash two_agent_race.sh
   ```
   30 seconds, no GUI, prints colored output showing the claim race + handoff + audit log.
@@ -43,7 +43,7 @@ Pick the one closest to your voice. The forcing function is the question; everyt
 
 ### Draft A — minimal, builder-to-builder
 
-> Hey [name] — I shipped [clawtodos v3.1](https://github.com/zzbyy/clawtodos/releases/tag/v3.1.0). It's a markdown-native task store with a `tasks.claim` MCP tool so agents on the same machine coordinate without colliding. Plain text on disk, git-as-audit, filelock for concurrency. 30-second demo: `bash <(curl -sSL https://raw.githubusercontent.com/zzbyy/clawtodos/v3.1.0/examples/demo/two_agent_race.sh)` (creates a tmp dir, runs alice vs bob racing for one claim, shows the audit log).
+> Hey [name] — I shipped [clawtodos v3.1](https://github.com/zzbyy/clawtodos/releases/tag/v3.1.0). It's a markdown-native task store with a `tasks.claim` MCP tool so agents on the same machine coordinate without colliding. Plain text on disk, git-as-audit, filelock for concurrency. 30-second demo: `bash <(curl -sSL https://raw.githubusercontent.com/zzbyy/clawtodos/main/examples/demo/two_agent_race.sh)` (creates a tmp dir, runs alice vs bob racing for one claim, shows the audit log).
 >
 > One question: **what would make you switch [your kanban / your tool] to use this as the backing store?**
 >
@@ -57,7 +57,7 @@ Pick the one closest to your voice. The forcing function is the question; everyt
 >
 > 30-sec demo (no install if you have Python 3.10+):
 > ```
-> bash <(curl -sSL https://raw.githubusercontent.com/zzbyy/clawtodos/v3.1.0/examples/demo/two_agent_race.sh)
+> bash <(curl -sSL https://raw.githubusercontent.com/zzbyy/clawtodos/main/examples/demo/two_agent_race.sh)
 > ```
 >
 > The question: **what would make you switch [your tool's] storage to this — or what's the deal-breaker?**
@@ -66,7 +66,7 @@ Pick the one closest to your voice. The forcing function is the question; everyt
 
 ### Draft C — short DM / X / Discord
 
-> built [clawtodos v3.1](https://github.com/zzbyy/clawtodos/releases/tag/v3.1.0) — markdown task store + MCP server with claim/handoff so agents coordinate without colliding. 30-sec demo: `bash <(curl -sSL https://raw.githubusercontent.com/zzbyy/clawtodos/v3.1.0/examples/demo/two_agent_race.sh)`. one question: would you switch [your kanban]'s storage to this? what's missing?
+> built [clawtodos v3.1](https://github.com/zzbyy/clawtodos/releases/tag/v3.1.0) — markdown task store + MCP server with claim/handoff so agents coordinate without colliding. 30-sec demo: `bash <(curl -sSL https://raw.githubusercontent.com/zzbyy/clawtodos/main/examples/demo/two_agent_race.sh)`. one question: would you switch [your kanban]'s storage to this? what's missing?
 
 ---
 
