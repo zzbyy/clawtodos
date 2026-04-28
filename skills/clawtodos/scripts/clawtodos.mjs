@@ -83,7 +83,12 @@ function main() {
     case "defer":
     case "new":
     case "propose":
-    case "add": {
+    case "add":
+    // v3.1 coordination commands
+    case "claim":
+    case "release":
+    case "handoff":
+    case "render": {
       const r = run([cmd, ...args]);
       if (r.code !== 0) {
         process.stderr.write(r.stderr);

@@ -1,7 +1,7 @@
 ---
 name: clawtodos
-version: 1.0.0
-description: Central cross-project todo aggregator for AI agents (clawtodos / todo-contract/v3). Manage todos across all projects from one central index. Use when zZ asks about todos, what's left, what's pending, what to work on, or wants to add/approve/drop/defer a todo.
+version: 3.1.0
+description: Central cross-project todo aggregator for AI agents (clawtodos / todo-contract/v3.1). Manage todos across all projects from one central index, with v3.1 multi-agent coordination (claim/release/handoff with leases) so agents on the same machine don't step on each other. Use when zZ asks about todos, what's left, what's pending, what to work on, or wants to add/approve/drop/defer/claim/release/handoff a todo.
 triggers:
   - "what's on my todo list"
   - "what's on my list"
@@ -18,6 +18,13 @@ triggers:
   - "what's left across everything"
   - "what should I work on"
   - "weekly review"
+  - "claim"
+  - "release"
+  - "hand off"
+  - "handoff"
+  - "give it back"
+  - "let claude finish"
+  - "let codex finish"
 ---
 
 # clawtodos — central task system for zZ
@@ -64,6 +71,12 @@ bun skills/clawtodos/scripts/clawtodos.mjs index
 
 # Weekly review snapshot
 bun skills/clawtodos/scripts/clawtodos.mjs snapshot
+
+# v3.1 multi-agent coordination
+bun skills/clawtodos/scripts/clawtodos.mjs claim   <slug> <id> --actor <name> [--lease 3600]
+bun skills/clawtodos/scripts/clawtodos.mjs release <slug> <id> --actor <name>
+bun skills/clawtodos/scripts/clawtodos.mjs handoff <slug> <id> --actor <name> --to <Y>
+bun skills/clawtodos/scripts/clawtodos.mjs render  <slug>   # rebuild TODOS.md from EVENTS.ndjson
 ```
 
 The `todos` CLI must be on PATH (`~/Library/Python/3.9/bin`). If not found, the script falls back to `python3 -m clawtodos`.
@@ -80,6 +93,15 @@ The `todos` CLI must be on PATH (`~/Library/Python/3.9/bin`). If not found, the 
 | "drop X" / "out of scope" | `drop <slug> <id> --reason ...` |
 | "defer X to date" | `defer <slug> <id> --until YYYY-MM-DD` |
 | "weekly review" | `snapshot` + diff vs last week |
+| **"claim X" / "I'll take X"** (v3.1) | `claim <slug> <id> --actor <self>` |
+| **"release X"** (v3.1) | `release <slug> <id> --actor <self>` |
+| **"hand off X to Y"** (v3.1) | `handoff <slug> <id> --actor <self> --to <Y>` |
+
+## Multi-agent coordination (v3.1)
+
+When more than one agent runs against the same `~/.todos/<slug>/`, claim the task before working on it. Before starting non-trivial work, check `claimed_by` on the target todo (read it from `list --json`); if another agent holds the claim and the lease hasn't expired, pick a different task. `claim` succeeds when nobody holds it, the lease expired, OR you ARE the current holder (self-refresh). `handoff` succeeds when nobody holds it (delegation) OR you ARE the holder. Otherwise both error with a stable code (`already_claimed`, `task_held_by_other_actor`). Claims are advisory hints, not enforcement — `start`/`done`/`drop` do not check the claim. See [SPEC-v3.1.md §8](https://github.com/zzbyy/clawtodos/blob/main/SPEC-v3.1.md).
+
+For MCP-aware clients (Claude Desktop, Cursor, Continue, Zed), `pip install 'clawtodos[mcp]'` installs `clawtodos-mcp` — the same surface, exposed as MCP tools.
 
 ## Idempotency
 
